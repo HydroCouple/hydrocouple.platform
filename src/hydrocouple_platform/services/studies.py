@@ -61,6 +61,8 @@ from .base import ServiceBase, human_actor
 MAX_CHUNK = 32
 # A chunk delivered this many times without a result fails its candidates.
 MAX_DELIVERIES = 3
+# Task jobs that fail, one after another, without completing a chunk before the study fails.
+MAX_TASK_FAILURES = 3
 TERMINAL_JOB_STATES = [s.value for s in JOB_TERMINAL]
 
 
@@ -70,11 +72,13 @@ def chunk_ranges(size: int, pool_size: int) -> list[tuple[int, int]]:
 
 
 def pareto_indices(points: list[tuple[int, list[float]]]) -> list[int]:
-    """Non-dominated points for minimization, as ``openswmm_gymnasium.scoring.pareto_front``.
+    """The Pareto set for minimization, as ``openswmm_gymnasium.optimize.assemble_result``.
 
     A point is dominated by another that is no worse in every objective and
-    better in at least one. Equal points do not dominate each other, so
-    duplicates on the front are all kept. Returns their indices in order.
+    better in at least one (``openswmm_gymnasium.scoring.pareto_front``). Like
+    ``assemble_result``, the set then holds every point ``numpy.allclose`` to a
+    front point, so duplicates and near-duplicates of the front are kept.
+    Returns the indices in order.
     """
     def dominates(a: list[float], b: list[float]) -> bool:
         pairs = list(zip(a, b, strict=True))
@@ -85,7 +89,12 @@ def pareto_indices(points: list[tuple[int, list[float]]]) -> list[int]:
         if any(dominates(other, costs) for _, other in front):
             continue
         front = [(i, c) for i, c in front if not dominates(costs, c)] + [(index, costs)]
-    return sorted(i for i, _ in front)
+
+    def allclose(a: list[float], b: list[float]) -> bool:  # numpy's defaults
+        return all(abs(x - y) <= 1e-8 + 1e-5 * abs(y) for x, y in zip(a, b, strict=True))
+
+    return [index for index, costs in points
+            if any(allclose(costs, f) for _, f in front)]
 
 
 class StudyServices(ServiceBase):
@@ -134,7 +143,8 @@ class StudyServices(ServiceBase):
 
     def _study_budget_reasons(self, s: Session, session: AgentSession, checked,
                               req: StudyCreate) -> list[str]:
-        reasons = self._budget_reasons(s, session, checked)  # type: ignore[attr-defined]
+        reasons = self._budget_reasons(  # type: ignore[attr-defined]
+            s, session, checked, slots=req.pool_size)
         budget = Budget.model_validate(session.budget)
         if budget.max_evaluations is not None:
             reserved = s.scalar(
@@ -145,11 +155,7 @@ class StudyServices(ServiceBase):
                 reasons.append(
                     f"the study asks for {req.max_evaluations} evaluations; the session has "
                     f"{max(budget.max_evaluations - reserved, 0)} of {budget.max_evaluations} left")
-        if budget.max_concurrent_attempts is not None and req.pool_size > \
-                budget.max_concurrent_attempts:
-            reasons.append(f"a pool of {req.pool_size} tasks exceeds the session's "
-                           f"{budget.max_concurrent_attempts} concurrent attempts")
-        return list(dict.fromkeys(reasons))
+        return reasons
 
     def create_study(self, principal: Principal, req: StudyCreate, idempotency_key: str
                      ) -> StudyView:
@@ -270,6 +276,11 @@ class StudyServices(ServiceBase):
         request_hash = sha256_of({"candidates": body.candidates})
         with self.tx() as s:
             study = self.owned(s, Study, study_id, principal, "editor", lock=True)
+            if principal.agent_session_id and study.agent_session_id != principal.agent_session_id:
+                # Its budget was checked against the studies it created, and only those.
+                raise PlatformError(
+                    ErrorCode.FORBIDDEN, "an AI agent session submits batches only to studies "
+                    "it created", next_action="Create a study under this agent session.")
             existing = s.scalar(select(StudyBatch).where(
                 StudyBatch.study_id == study.id, StudyBatch.idempotency_key == idempotency_key))
             if existing is not None:
@@ -343,8 +354,8 @@ class StudyServices(ServiceBase):
             if study.state == StudyState.PENDING_APPROVAL.value:
                 nxt = "The study waits for a person's approval; the batch runs after it"
         return BatchView(batch_id=batch.id, study_id=study.id, sequence=batch.sequence,
-                         state=batch.state, size=batch.size, completed=batch.completed,
-                         results=results, next_action=nxt)
+                         first_evaluation=batch.offset + 1, state=batch.state, size=batch.size,
+                         completed=batch.completed, results=results, next_action=nxt)
 
     # -- lifecycle -------------------------------------------------------------------
 
@@ -356,7 +367,12 @@ class StudyServices(ServiceBase):
         """No more batches; the study completes when the queued ones are evaluated."""
         with self.tx() as s:
             study = self.owned(s, Study, study_id, principal, "editor", lock=True)
-            if StudyState(study.state) in (StudyState.OPEN, StudyState.PENDING_APPROVAL):
+            if study.state == StudyState.PENDING_APPROVAL.value:
+                raise PlatformError(
+                    ErrorCode.INVALID_TRANSITION,
+                    f"study {study.id} waits for approval and cannot be closed yet",
+                    next_action="Resolve the approval first, or cancel the study.")
+            if study.state == StudyState.OPEN.value:
                 study.state = StudyState.CLOSED.value
                 study.updated_at = self.now()
                 self.audit(s, study.organization_id, human_actor(principal), "study.close",
@@ -429,6 +445,7 @@ class StudyServices(ServiceBase):
     def resolve_study_approval(self, s: Session, approval: Approval, approve: bool,
                                note: str | None) -> str:
         study = s.get(Study, approval.study_id, with_for_update=True)
+        # Only an approval opens a study that waits for one; nothing else leaves that state.
         if study.state == StudyState.PENDING_APPROVAL.value:
             if approve:
                 study.state = StudyState.OPEN.value
@@ -437,17 +454,11 @@ class StudyServices(ServiceBase):
             else:
                 self._end_study(s, study, StudyState.REJECTED,
                                 {"reason": "approval rejected", "note": note})
-        elif study.state == StudyState.CLOSED.value and approve:
-            self._top_up(s, study)  # closed while waiting; evaluate what was queued
-        elif study.state == StudyState.CLOSED.value:
-            self._end_study(s, study, StudyState.REJECTED,
-                            {"reason": "approval rejected", "note": note})
         return study.state
 
     def expire_study_approval(self, s: Session, approval: Approval) -> None:
         study = s.get(Study, approval.study_id, with_for_update=True)
-        if StudyState(study.state) in (StudyState.PENDING_APPROVAL, StudyState.CLOSED) and \
-                not s.scalar(select(func.count()).select_from(Job).where(Job.study_id == study.id)):
+        if study.state == StudyState.PENDING_APPROVAL.value:
             self._end_study(s, study, StudyState.REJECTED,
                             {"reason": "approval expired unanswered"})
 
@@ -479,6 +490,9 @@ class StudyServices(ServiceBase):
     def _release(self, s: Session, study: Study, chunk: ChunkRow, reason: str) -> None:
         """Return a chunk to the queue, or fail its candidates after too many deliveries."""
         chunk.holder_attempt_id, chunk.lease_expires_at = None, None
+        if StudyState(study.state) in STUDY_TERMINAL:
+            chunk.state = "CANCELLED"
+            return
         if chunk.deliveries < MAX_DELIVERIES:
             chunk.state = "PENDING"
             return
@@ -492,18 +506,30 @@ class StudyServices(ServiceBase):
         if job.study_id is None:
             return
         study = s.get(Study, job.study_id, with_for_update=True)
-        for chunk in s.scalars(select(ChunkRow).where(
+        for chunk in list(s.scalars(select(ChunkRow).where(
                 ChunkRow.holder_attempt_id == attempt.id, ChunkRow.state == "LEASED")
-                .with_for_update()):
-            self._release(s, study, chunk, f"attempt {attempt.number} of {job.id} ended")
-        if (JobState(job.state) == JobState.FAILED and failure_class in
-                (FailureClass.INVALID_INPUT, FailureClass.MISSING_DEPENDENCY)
-                and StudyState(study.state) not in STUDY_TERMINAL):
-            message = (attempt.diagnostics or {}).get("message")
+                .with_for_update())):
+            if chunk.state == "LEASED":  # an earlier release may have ended the study
+                self._release(s, study, chunk, f"attempt {attempt.number} of {job.id} ended")
+        if StudyState(study.state) in STUDY_TERMINAL:
+            return
+        message = (attempt.diagnostics or {}).get("message")
+        if JobState(job.state) == JobState.FAILED and failure_class in \
+                (FailureClass.INVALID_INPUT, FailureClass.MISSING_DEPENDENCY):
             self._end_study(s, study, StudyState.FAILED, {
                 "reason": "the evaluator could not run the study", "job_id": job.id,
                 "class": failure_class.value, "message": message})
             return
+        if JobState(job.state) in (JobState.FAILED, JobState.TIMED_OUT):
+            # Tasks that keep failing without completing a chunk would be replaced forever.
+            study.task_failures += 1
+            if study.task_failures >= MAX_TASK_FAILURES:
+                self._end_study(s, study, StudyState.FAILED, {
+                    "reason": f"{study.task_failures} evaluator tasks failed without completing "
+                              "a chunk", "job_id": job.id,
+                    "class": failure_class.value if failure_class else None,
+                    "message": message})
+                return
         self._maybe_complete(s, study)
         self._top_up(s, study)
 
@@ -511,7 +537,10 @@ class StudyServices(ServiceBase):
         if job.study_id is None:
             return
         study = s.get(Study, job.study_id, with_for_update=True)
-        if StudyState(study.state) not in STUDY_TERMINAL:
+        others = s.scalar(select(func.count()).select_from(Job).where(
+            Job.study_id == study.id, Job.id != job.id,
+            Job.state.notin_(TERMINAL_JOB_STATES))) or 0
+        if others == 0 and StudyState(study.state) not in STUDY_TERMINAL:
             self._end_study(s, study, StudyState.FAILED, {
                 "reason": "no capacity claimed an evaluator task before its queue deadline",
                 "job_id": job.id, "class": FailureClass.CAPACITY.value})
@@ -537,6 +566,14 @@ class StudyServices(ServiceBase):
             if study.state not in (StudyState.OPEN.value, StudyState.CLOSED.value):
                 job.retired_at = now
                 return done
+            # A task evaluates one chunk at a time, so asking again while it holds one means the
+            # answer was lost on the way (a timeout after commit): deliver the same lease again.
+            held = s.scalar(
+                select(ChunkRow).where(ChunkRow.holder_attempt_id == attempt.id,
+                                       ChunkRow.state == "LEASED")
+                .order_by(ChunkRow.batch_sequence, ChunkRow.start).limit(1).with_for_update())
+            if held is not None:
+                return EvaluationLeaseResponse(chunk=self._chunk(s, held))
             chunk = s.scalar(
                 select(ChunkRow).where(ChunkRow.study_id == study.id, ChunkRow.state == "PENDING")
                 .order_by(ChunkRow.batch_sequence, ChunkRow.start).limit(1)
@@ -549,7 +586,6 @@ class StudyServices(ServiceBase):
                     job.retired_at = now
                     return done
                 return EvaluationLeaseResponse(poll_after_seconds=1.0)
-            batch = s.get(StudyBatch, chunk.batch_id)
             timeout = float(study.definition.get("evaluation_timeout_seconds", 600))
             chunk.state = "LEASED"
             chunk.lease_number += 1
@@ -557,12 +593,16 @@ class StudyServices(ServiceBase):
             chunk.holder_attempt_id = attempt.id
             chunk.lease_expires_at = now + timedelta(
                 seconds=timeout * (chunk.stop - chunk.start) + self.settings.lease_seconds)
-            return EvaluationLeaseResponse(chunk=EvaluationChunk(
-                chunk_id=chunk.id, lease_number=chunk.lease_number, study_id=study.id,
-                batch_id=batch.id, start=chunk.start,
-                first_evaluation=batch.offset + chunk.start + 1,
-                candidates=batch.candidates[chunk.start:chunk.stop],
-                lease_expires_at=chunk.lease_expires_at))
+            return EvaluationLeaseResponse(chunk=self._chunk(s, chunk))
+
+    @staticmethod
+    def _chunk(s: Session, chunk: ChunkRow) -> EvaluationChunk:
+        batch = s.get(StudyBatch, chunk.batch_id)
+        return EvaluationChunk(
+            chunk_id=chunk.id, lease_number=chunk.lease_number, study_id=chunk.study_id,
+            batch_id=batch.id, start=chunk.start, first_evaluation=batch.offset + chunk.start + 1,
+            candidates=batch.candidates[chunk.start:chunk.stop],
+            lease_expires_at=chunk.lease_expires_at)
 
     def evaluation_complete(self, target_id: str, attempt_token: str,
                             body: EvaluationCompletion) -> CompletionAck:
@@ -636,6 +676,8 @@ class StudyServices(ServiceBase):
         study.evaluations_completed += len(records)
         study.evaluations_failed += len(failures)
         study.updated_at = now
+        if attempt_id is not None:
+            study.task_failures = 0  # a task completed a chunk: the pool works
         batch.completed += len(records)
         s.flush()
         if batch.completed >= batch.size and batch.state == BatchState.QUEUED.value:
@@ -645,7 +687,7 @@ class StudyServices(ServiceBase):
             batch.state, batch.completed_at = BatchState.DONE.value, now
         if failures and policy == FailurePolicy.FAIL and \
                 StudyState(study.state) not in STUDY_TERMINAL:
-            evaluation, error = failures[0]
+            evaluation, error = min(failures)
             self._end_study(s, study, StudyState.FAILED, {
                 "reason": f"evaluation {evaluation} failed and the study's policy is 'fail'",
                 "evaluation": evaluation, "error": error})
@@ -653,8 +695,8 @@ class StudyServices(ServiceBase):
     # -- reconciler -------------------------------------------------------------------
 
     def reconcile_studies(self, limit: int = 200) -> dict[str, int]:
-        """Re-offer chunks whose leases expired, and restart pools that have work but no
-        working task."""
+        """Re-offer chunks whose leases expired, and top up pools that have fewer working
+        tasks than their size while work waits."""
         now = self.now()
         counts = {"chunk_leases_expired": 0, "pools_restarted": 0}
         with self.tx() as s:
@@ -662,15 +704,12 @@ class StudyServices(ServiceBase):
                 select(ChunkRow.id, ChunkRow.study_id).where(
                     ChunkRow.state == "LEASED", ChunkRow.lease_expires_at < now)
                 .order_by(ChunkRow.lease_expires_at).limit(limit)))
-            idle = list(s.scalars(
+            waiting = list(s.scalars(
                 select(Study.id).where(
                     Study.state.in_([StudyState.OPEN.value, StudyState.CLOSED.value]),
                     select(ChunkRow.id).where(ChunkRow.study_id == Study.id,
-                                              ChunkRow.state == "PENDING").exists(),
-                    ~select(Job.id).where(Job.study_id == Study.id,
-                                          Job.state.notin_(TERMINAL_JOB_STATES),
-                                          Job.retired_at.is_(None)).exists())
-                .limit(limit)))
+                                              ChunkRow.state == "PENDING").exists())
+                .order_by(Study.updated_at).limit(limit)))
         for chunk_id, study_id in expired:
             with self.tx() as s:
                 study = s.get(Study, study_id, with_for_update=True)
@@ -683,7 +722,7 @@ class StudyServices(ServiceBase):
                     continue
                 self._maybe_complete(s, study)
                 self._top_up(s, study)
-        for study_id in idle:
+        for study_id in waiting:  # pools short of tasks while work waits (e.g. a task cancelled)
             with self.tx() as s:
                 study = s.get(Study, study_id, with_for_update=True)
                 counts["pools_restarted"] += self._top_up(s, study) > 0

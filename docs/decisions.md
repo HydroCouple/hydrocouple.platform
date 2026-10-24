@@ -90,13 +90,23 @@ Callers submit batches of candidates and read back their costs. The optimizer al
 
 A late result from an earlier lease is discarded. When an attempt ends, its chunks are released, and the reconciler re-offers chunks whose leases expired. After three deliveries without a result, the chunk's candidates fail under the study's policy.
 
+A task asking for a lease while it still holds a chunk gets that chunk again: the earlier answer was lost on the way.
+
+**Evaluations.** Each evaluation must finish within the study's `evaluation_timeout_seconds`. One that runs over fails as a candidate, under the study's policy, and the task carries on. So does a candidate that returns a long error or a non-finite cost: its error is cut to 2,000 characters, and invalid costs become an error.
+
 **Rows and records.** Rows are per study, batch and chunk, never per evaluation. The evaluator writes each chunk's records as an append-only JSON-lines object in the target's storage. The chunk row keeps the object's key and SHA-256, and the study manifest indexes them.
 
 **Retiring tasks.** A task retires when the study has ended, or when it has been idle for the idle timeout. The control plane decides this under the study lock, so a batch submitted at the same moment starts a new task. Every batch submission, every task end and the reconciler top the pool back up to N while work remains.
 
-**Runner gateway.** An evaluator talks to its agent through a runner gateway: loopback HTTP for the local pool, with a token per attempt. The agent relays each call with its own credential and the attempt token. It verifies each records object in storage, and applies the egress policy to candidate error text. Objective values are metrics and always travel.
+**A pool that cannot work.** The pool is not replaced forever:
 
-**Budgets.** An agent session's budget gains `max_evaluations`. A study reserves its evaluation budget when it is created. A study beyond the session's budget is `PENDING_APPROVAL`, and only a person can resolve it.
+- An evaluator that cannot start fails the study at once, as invalid input.
+- After three tasks in a row fail without completing a chunk, the study fails. Any completed chunk resets the count.
+- A queued task that passes its queue deadline fails the study only when it is the study's last task.
+
+**Runner gateway.** An evaluator talks to its agent through a runner gateway: loopback HTTP for the local pool, with a token per attempt. The token reaches the runner on stdin, never in its environment, and no runner inherits the agent's `HCP_*` settings, so runners never hold the agent credential. The agent relays each call with its own credential and the attempt token. It verifies each records object in storage, and applies the egress policy to candidate error text. Objective values are metrics and always travel.
+
+**Budgets.** An agent session's budget gains `max_evaluations`. A study reserves its evaluation budget when it is created, and its pool size against the session's concurrent-attempt limit. A study beyond the session's budget is `PENDING_APPROVAL`. Only a person's approval moves it on, and until then it has no tasks and cannot be closed. An agent session submits batches only to studies it created.
 
 **Rules out.**
 
@@ -104,7 +114,12 @@ A late result from an earlier lease is discarded. When an attempt ends, its chun
 - Optimizers running inside the control plane.
 - Runners with platform credentials.
 
-**Known limit.** Every lease and completion for one study takes the study's row lock. That is measured fine for a few tasks: 1,000 twin-tank evaluations on three tasks took about a minute. Pools of hundreds of tasks will need the lock narrowed.
+**Known limits.**
+
+- Every lease and completion for one study takes the study's row lock. That is measured fine for a few tasks: 1,000 twin-tank evaluations on three tasks took about a minute. Pools of hundreds of tasks will need the lock narrowed.
+- A pool's size is not checked against the target's capacity. Tasks beyond it wait in the queue.
+- Under the `fail` policy, chunks run in parallel, so a study can fail on a later chunk while earlier ones are still unevaluated. `run_platform_study` writes the records evaluated before the failure, as `run_study` does, and reports the rest as not evaluated, where `run_study` would have evaluated them.
+- Platypus draws from Python's `random`, which `run_study` does not seed. `run_platform_study` seeds it with the study's seed, so a same-seeded local comparison must seed it too.
 
 ## Out of release 1
 

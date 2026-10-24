@@ -40,6 +40,7 @@ from ..db.models import (
     Project,
     Revision,
     Run,
+    Study,
     new_id,
 )
 from ..workflows import Workflow, get_workflow
@@ -165,19 +166,30 @@ class RunServices(ServiceBase):
             ),
         )
 
-    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked) -> list[str]:
+    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked,
+                        slots: int = 1) -> list[str]:
+        """Why a submission needing ``slots`` concurrent attempts is outside the budget."""
         budget = Budget.model_validate(session.budget)
         reasons: list[str] = []
         if budget.max_runs is not None and session.runs_submitted >= budget.max_runs:
             reasons.append(f"the agent session has used its {budget.max_runs} runs")
         if budget.max_concurrent_attempts is not None:
+            # Active run jobs, plus every live study's whole pool, which can start at any time.
             active = s.scalar(
                 select(func.count()).select_from(Job).join(Run, Run.id == Job.run_id)
-                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES))
+                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES),
+                       Job.study_id.is_(None))
             ) or 0
-            if active >= budget.max_concurrent_attempts:
-                reasons.append(f"{active} jobs are already active; the session allows "
-                               f"{budget.max_concurrent_attempts}")
+            pools = s.scalar(
+                select(func.coalesce(func.sum(Study.pool_size), 0))
+                .where(Study.agent_session_id == session.id,
+                       Study.state.in_(["PENDING_APPROVAL", "OPEN", "CLOSED"]))
+            ) or 0
+            if active + pools + slots > budget.max_concurrent_attempts:
+                reasons.append(
+                    f"{active} jobs are active and {pools} pool tasks are reserved; with "
+                    f"{slots} more the session would exceed its "
+                    f"{budget.max_concurrent_attempts} concurrent attempts")
         if budget.allowed_targets is not None and checked.target.id not in budget.allowed_targets:
             reasons.append(f"target {checked.target.id} is outside the session's allowed targets")
         if (budget.allowed_job_classes is not None
@@ -441,6 +453,11 @@ class RunServices(ServiceBase):
     def get_results(self, principal: Principal, run_id: str) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            study = s.scalar(select(Study.id).where(Study.run_id == run.id))
+            if study is not None:
+                raise PlatformError(ErrorCode.NOT_READY,
+                                    f"run {run.id} is the evaluator pool of study {study}",
+                                    next_action=f"Read the results of study {study}")
             if run.canonical_attempt_id is None:
                 job = s.scalar(select(Job).where(Job.run_id == run.id))
                 raise PlatformError(ErrorCode.NOT_READY,

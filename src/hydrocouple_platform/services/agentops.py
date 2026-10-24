@@ -278,7 +278,9 @@ class AgentServices(ServiceBase):
                           fence=res.fencing_token)
         with self.tx() as s:
             job, attempt = self._locked(s, target_id, res.attempt_id)
-            run = s.get(Run, job.run_id, with_for_update=True)
+            # FOR NO KEY UPDATE: publication serializes on the run, but inserts that reference
+            # it (an evaluator pool's new task jobs) must not wait for it.
+            run = s.get(Run, job.run_id, with_for_update={"key_share": True})
             if (attempt.state == AttemptState.SUCCEEDED.value
                     and res.outcome == AttemptOutcome.SUCCEEDED
                     and (run.canonical_attempt_id == attempt.id or job.study_id is not None)):

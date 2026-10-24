@@ -34,6 +34,7 @@ def upgrade() -> None:
     sa.Column('evaluations_submitted', sa.Integer(), nullable=False),
     sa.Column('evaluations_completed', sa.Integer(), nullable=False),
     sa.Column('evaluations_failed', sa.Integer(), nullable=False),
+    sa.Column('task_failures', sa.Integer(), nullable=False),
     sa.Column('idempotency_key', sa.String(length=200), nullable=False),
     sa.Column('request_hash', sa.String(length=64), nullable=False),
     sa.Column('actor', postgresql.JSONB(astext_type=sa.Text()), nullable=False),

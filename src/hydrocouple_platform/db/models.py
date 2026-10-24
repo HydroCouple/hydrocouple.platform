@@ -339,6 +339,8 @@ class Study(Base):
     evaluations_submitted: Mapped[int] = mapped_column(Integer, default=0)
     evaluations_completed: Mapped[int] = mapped_column(Integer, default=0)
     evaluations_failed: Mapped[int] = mapped_column(Integer, default=0)
+    # Task jobs that failed since a chunk last completed; too many ends the study.
+    task_failures: Mapped[int] = mapped_column(Integer, default=0)
     idempotency_key: Mapped[str] = mapped_column(String(200))
     request_hash: Mapped[str] = mapped_column(String(64))
     actor: Mapped[dict[str, Any]] = mapped_column(JSONB)

@@ -78,6 +78,8 @@ class Context:
     events: Events
     cancel: threading.Event = field(default_factory=threading.Event)
     started_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    # Values the agent passed on stdin, kept out of the environment (the gateway token).
+    secrets: dict[str, str] = field(default_factory=dict, repr=False)
 
     @property
     def inputs(self) -> Path:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import tempfile
@@ -56,6 +57,22 @@ from .gateway import RunnerGateway
 
 log = logging.getLogger(__name__)
 MAX_BUFFERED_EVENTS = 10_000
+MAX_EVALUATION_ERROR = 2000
+
+
+def _trimmed(raw: object) -> object:
+    """One candidate's result from a runner, made reportable: a long error is cut and
+    non-finite costs become an error, so one bad candidate cannot fail its chunk."""
+    if not isinstance(raw, dict):
+        return raw
+    out = dict(raw)
+    costs = out.get("costs")
+    if out.get("error") is None and isinstance(costs, list) and not all(
+            isinstance(c, (int, float)) and math.isfinite(c) for c in costs):
+        out.update(costs=None, error=f"the evaluation returned invalid costs: {costs!r}")
+    if isinstance(out.get("error"), str):
+        out["error"] = out["error"][:MAX_EVALUATION_ERROR]
+    return out
 
 
 class AgentClient:
@@ -186,10 +203,10 @@ class Agent:
         if lease.attempt_id in self.held:
             return
         try:
-            env = self._runner_env(lease)
-            # Only evaluator tasks get extra environment; other submits keep the plain call.
-            handle = (self.adapter.submit(lease, self.store_uri, env=env) if env else
-                      self.adapter.submit(lease, self.store_uri))
+            extra = self._runner_env(lease)
+            # Only evaluator tasks get the gateway; other submits keep the plain call.
+            handle = (self.adapter.submit(lease, self.store_uri, env=extra[0], secrets=extra[1])
+                      if extra else self.adapter.submit(lease, self.store_uri))
         except Exception as exc:
             if self.gateway is not None:
                 self.gateway.unregister(lease.attempt_id)
@@ -302,13 +319,14 @@ class Agent:
 
     # -- evaluator tasks: the runner gateway calls these from its own threads -------------
 
-    def _runner_env(self, lease: LeaseGrant) -> dict[str, str] | None:
+    def _runner_env(self, lease: LeaseGrant) -> tuple[dict[str, str], dict[str, str]] | None:
+        """The gateway address (environment) and token (secret) for an evaluator task."""
         if lease.spec.resources.job_class != JobClass.EVALUATOR_POOL:
             return None
         if self.gateway is None:
             self.gateway = RunnerGateway(self, host=self.gateway_host)
-        return {"HCP_GATEWAY_URL": self.gateway.url,
-                "HCP_RUNNER_TOKEN": self.gateway.register(lease.attempt_id)}
+        return ({"HCP_GATEWAY_URL": self.gateway.url},
+                {"HCP_RUNNER_TOKEN": self.gateway.register(lease.attempt_id)})
 
     def _held_task(self, attempt_id: str) -> _Held:
         held = self.held.get(attempt_id)
@@ -336,7 +354,7 @@ class Agent:
         if self.store.stat(obj.key) != (obj.size, obj.sha256):
             raise PlatformError(ErrorCode.VALIDATION_ERROR,
                                 f"{obj.key} is missing or does not match its size or sha256")
-        results = [self._filter_result(EvaluationResult.model_validate(r))
+        results = [self._filter_result(EvaluationResult.model_validate(_trimmed(r)))
                    for r in body.get("results") or []]
         completion = EvaluationCompletion(
             attempt_id=attempt_id, fencing_token=held.lease.fencing_token,

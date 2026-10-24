@@ -10,8 +10,12 @@ from __future__ import annotations
 
 import json
 import random
+import threading
+from collections import Counter
+from datetime import timedelta
 
 import pytest
+from sqlalchemy import select
 
 from conftest import DATA
 from hydrocouple_platform.contracts.agent import AttemptOutcome, AttemptResult
@@ -28,7 +32,7 @@ from hydrocouple_platform.contracts.studies import (
     StudyCreate,
 )
 from hydrocouple_platform.db.models import EvaluationChunk, Job
-from hydrocouple_platform.services.studies import pareto_indices
+from hydrocouple_platform.services.studies import MAX_DELIVERIES, pareto_indices
 from hydrocouple_platform.storage import sha256_file
 from world import local_capabilities, make_world, ready_revision
 
@@ -513,8 +517,8 @@ class PoolAdapter:
     def free_slots(self):
         return 2
 
-    def submit(self, lease, store_uri, env=None):
-        self.submitted[lease.attempt_id] = env
+    def submit(self, lease, store_uri, env=None, secrets=None):
+        self.submitted[lease.attempt_id] = (env, secrets)
         return lease.attempt_id
 
     def inspect(self, handle):
@@ -549,10 +553,12 @@ def test_runners_lease_and_report_only_through_their_agent(setup, egress):
                   world.store_uri, EgressPolicy(egress))
     try:
         agent.run_once()
-        ((attempt_id, env),) = adapter.submitted.items()
+        ((attempt_id, (env, secrets)),) = adapter.submitted.items()
+        assert env == {"HCP_GATEWAY_URL": env["HCP_GATEWAY_URL"]}  # the token is a secret
         assert env["HCP_GATEWAY_URL"].startswith("http://127.0.0.1:")
+        assert secrets["HCP_RUNNER_TOKEN"].startswith("hcpr_")
         gateway = httpx.Client(base_url=env["HCP_GATEWAY_URL"],
-                               headers={"Authorization": f"Bearer {env['HCP_RUNNER_TOKEN']}"})
+                               headers={"Authorization": f"Bearer {secrets['HCP_RUNNER_TOKEN']}"})
         assert httpx.post(env["HCP_GATEWAY_URL"] + "/v1/evaluations/lease", json={},
                           headers={"Authorization": "Bearer hcpr_wrong"}).status_code == 401
 
@@ -619,3 +625,234 @@ def test_the_migrations_build_exactly_the_models(database_url):
             assert compare_metadata(MigrationContext.configure(conn), Base.metadata) == []
     finally:
         engine.dispose()
+
+
+# -- regressions from the October 24 review ----------------------------------------------
+
+
+def session_principal(world, budget: Budget):
+    svc = world.services
+    session = svc.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code", budget=budget))
+    return svc.session_principal(session["agent_session_token"])
+
+
+def end_attempt(world, task, failure_class=FailureClass.ENGINE_CRASH, message=None):
+    world.services.agent_complete(world.target_id, task.lease.attempt_token, AttemptResult(
+        attempt_id=task.attempt_id, fencing_token=task.lease.fencing_token,
+        outcome=AttemptOutcome.FAILED, failure_class=failure_class, exit_code=1,
+        diagnostics={"message": message} if message else {}))
+
+
+def test_a_study_waiting_for_approval_cannot_be_closed_into_running(setup):
+    world, revision = setup
+    svc = world.services
+    agent = session_principal(world, Budget(max_evaluations=10))
+    study = create(world, revision, principal=agent, max_evaluations=50, pool_size=1)
+    assert study.state == "PENDING_APPROVAL"
+    svc.submit_batch(agent, study.study_id, BatchSubmit(candidates=candidates(3)),
+                     "batch-key-0001")
+    with pytest.raises(PlatformError) as refused:
+        svc.close_study(agent, study.study_id)
+    assert refused.value.code == ErrorCode.INVALID_TRANSITION
+    svc.reconcile()
+    assert start_tasks(world) == []
+    view = svc.get_study(world.admin, study.study_id)
+    assert view.state == "PENDING_APPROVAL" and view.pool == []
+
+
+def test_a_task_report_does_not_block_or_deadlock_a_batch_submission(setup, monkeypatch):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=2)
+    svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(1)),
+                     "batch-key-0001")
+    (task,) = start_tasks(world)
+    reached, go = threading.Event(), threading.Event()
+    original = svc.study_attempt_ended
+
+    def paused(s, job, attempt, failure_class):
+        reached.set()  # agent_complete holds the job, the attempt and the run here
+        go.wait(10)
+        return original(s, job, attempt, failure_class)
+
+    monkeypatch.setattr(svc, "study_attempt_ended", paused)
+    errors: list[BaseException] = []
+
+    def run(call):
+        try:
+            call()
+        except BaseException as exc:
+            errors.append(exc)
+
+    reporter = threading.Thread(target=run, args=(lambda: end_attempt(world, task),))
+    reporter.start()
+    assert reached.wait(10)
+    # Adding a task to the study's run takes a key-share lock on the run row, which the
+    # report's lock must not conflict with.
+    submitter = threading.Thread(target=run, args=(lambda: svc.submit_batch(
+        world.admin, study.study_id, BatchSubmit(candidates=candidates(2, seed=5)),
+        "batch-key-0002"),))
+    submitter.start()
+    submitter.join(10)
+    blocked = submitter.is_alive()
+    go.set()
+    submitter.join(30)
+    reporter.join(30)
+    assert not blocked and errors == []
+
+
+def test_tasks_that_keep_failing_before_any_result_end_the_study(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=1)
+    batch = svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(1)),
+                             "batch-key-0001")
+    for _ in range(20):  # bounded: before the fix, failed tasks were replaced forever
+        tasks = start_tasks(world)
+        if not tasks:
+            break
+        end_attempt(world, tasks[0], FailureClass.UNKNOWN, "evaluation worker failed to start")
+    view = svc.get_study(world.admin, study.study_id)
+    assert view.state == "FAILED" and len(view.pool) == 3
+    assert view.failure["reason"] == "3 evaluator tasks failed without completing a chunk"
+    assert view.failure["message"] == "evaluation worker failed to start"
+    assert svc.get_batch(world.admin, study.study_id, batch.batch_id).state == "FAILED"
+
+
+def test_completing_a_chunk_resets_the_task_failure_count(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=1)
+    svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(4)),
+                     "batch-key-0001")
+    for _ in range(2):  # two tasks fail (each after its retry)
+        for _ in range(2):
+            (task,) = start_tasks(world)
+            end_attempt(world, task, FailureClass.UNKNOWN)
+    (task,) = start_tasks(world)
+    assert task.complete(task.lease_chunk().chunk).accepted  # the pool works after all
+    end_attempt(world, task, FailureClass.UNKNOWN)
+    for _ in range(2):
+        (task,) = start_tasks(world)
+        end_attempt(world, task, FailureClass.UNKNOWN)
+    assert svc.get_study(world.admin, study.study_id).state == "OPEN"
+
+
+def test_studies_reserve_their_pools_against_the_session_concurrency_budget(setup):
+    world, revision = setup
+    svc = world.services
+    agent = session_principal(world, Budget(max_concurrent_attempts=2))
+    first = create(world, revision, key="study-key-0001", principal=agent, pool_size=2)
+    assert first.state == "OPEN"
+    second = create(world, revision, key="study-key-0002", principal=agent, pool_size=1)
+    assert second.state == "PENDING_APPROVAL"
+    run = svc.submit_run(agent, world.run_request(revision["revision_id"]), "run-key-0001")
+    assert run.status == "PENDING_APPROVAL"
+
+
+def test_an_agent_session_submits_batches_only_to_its_own_studies(setup):
+    world, revision = setup
+    svc = world.services
+    human = create(world, revision, key="study-key-0001", max_evaluations=1000)
+    agent = session_principal(world, Budget(max_evaluations=1, allowed_targets=["tgt_other"]))
+    other = session_principal(world, Budget(max_evaluations=100))
+    theirs = create(world, revision, key="study-key-0002", principal=other, max_evaluations=50)
+    for study in (human, theirs):
+        with pytest.raises(PlatformError) as refused:
+            svc.submit_batch(agent, study.study_id, BatchSubmit(candidates=candidates(50)),
+                             "batch-key-0001")
+        assert refused.value.code == ErrorCode.FORBIDDEN
+    assert svc.get_study(world.admin, human.study_id).evaluations_submitted == 0
+
+
+def test_a_lost_lease_response_is_delivered_again(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=1)
+    batch = svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(2)),
+                             "batch-key-0001")
+    (task,) = start_tasks(world)
+    lost = task.lease_chunk().chunk  # the response never reaches the runner
+    again = task.lease_chunk().chunk  # so it asks again
+    assert (again.chunk_id, again.lease_number) == (lost.chunk_id, lost.lease_number)
+    assert task.complete(again).accepted
+    task.drain()
+    assert svc.get_batch(world.admin, study.study_id, batch.batch_id).state == "DONE"
+    with svc.tx() as s:
+        assert s.get(EvaluationChunk, lost.chunk_id).deliveries == 1
+
+
+def expire_queued_tasks(svc, study_id: str) -> None:
+    with svc.tx() as s:
+        for job in s.scalars(select(Job).where(Job.study_id == study_id,
+                                               Job.state == "LEASABLE")):
+            job.queue_deadline_at = svc.now() - timedelta(seconds=1)
+
+
+def test_a_queued_task_past_its_deadline_fails_the_study_only_when_it_is_alone(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=2)
+    svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(4)),
+                     "batch-key-0001")
+    (running,) = start_tasks(world, slots=1)  # capacity for one of the two tasks
+    expire_queued_tasks(svc, study.study_id)
+    assert svc.reconcile()["queue_timeouts"] == 1
+    assert svc.get_study(world.admin, study.study_id).state == "OPEN"
+    assert running.drain() == 4
+
+    alone = create(world, revision, key="study-key-0002", pool_size=1)
+    svc.submit_batch(world.admin, alone.study_id, BatchSubmit(candidates=candidates(1)),
+                     "batch-key-0002")
+    svc.dispatch()
+    expire_queued_tasks(svc, alone.study_id)
+    svc.reconcile()
+    view = svc.get_study(world.admin, alone.study_id)
+    assert view.state == "FAILED" and "queue deadline" in view.failure["reason"]
+
+
+def test_the_reconciler_tops_up_a_pool_that_lost_some_of_its_tasks(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=2)
+    svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(4)),
+                     "batch-key-0001")
+    pool = svc.get_study(world.admin, study.study_id).pool
+    svc.cancel_job(world.admin, pool[0]["job_id"])
+    assert svc.reconcile()["pools_restarted"] == 1
+    pool = svc.get_study(world.admin, study.study_id).pool
+    assert Counter(p["state"] for p in pool) == {"CANCELLED": 1, "ACCEPTED": 2}
+
+
+def test_a_chunk_cancelled_by_a_failed_study_stays_cancelled(setup):
+    world, revision = setup
+    svc = world.services
+    study = create(world, revision, pool_size=1, on_failure="fail")
+    svc.submit_batch(world.admin, study.study_id, BatchSubmit(candidates=candidates(4)),
+                     "batch-key-0001")
+    (task,) = start_tasks(world)
+    with svc.tx() as s:  # the attempt holds both chunks, each at its last delivery
+        chunks = s.scalars(select(EvaluationChunk).where(
+            EvaluationChunk.study_id == study.study_id)).all()
+        assert len(chunks) == 2
+        for chunk in chunks:
+            chunk.state, chunk.holder_attempt_id = "LEASED", task.attempt_id
+            chunk.deliveries, chunk.lease_number = MAX_DELIVERIES, MAX_DELIVERIES
+            chunk.lease_expires_at = svc.now() + timedelta(seconds=60)
+    end_attempt(world, task)
+    with svc.tx() as s:
+        states = sorted(c.state for c in s.scalars(select(EvaluationChunk).where(
+            EvaluationChunk.study_id == study.study_id)))
+    assert states == ["CANCELLED", "DONE"]
+    assert svc.get_study(world.admin, study.study_id).state == "FAILED"
+    assert svc.list_evaluations(world.admin, study.study_id)["complete"]
+
+
+def test_a_studys_run_points_to_the_study_for_results(setup):
+    world, revision = setup
+    study = create(world, revision)
+    with pytest.raises(PlatformError) as pointed:
+        world.services.get_results(world.admin, study.run_id)
+    assert pointed.value.code == ErrorCode.NOT_READY
+    assert study.study_id in pointed.value.body.next_action

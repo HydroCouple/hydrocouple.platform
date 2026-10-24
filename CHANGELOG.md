@@ -15,3 +15,4 @@ First implementation of the cloud execution plan (milestones M1 to M3).
 - Studies (M3b): ask/tell batches evaluated on evaluator pools, with fenced chunk leases, re-leasing after task loss, failed-candidate policies, per-session evaluation budgets and approvals, lineage, a study manifest and the Pareto set.
 - `gym.evaluate@1` evaluator tasks on `openswmm_gymnasium`, reached through the agent's runner gateway; `run_platform_study` drives gymnasium's optimizers on the platform.
 - Migration `0002` for studies, batches and evaluation chunks.
+- Runners inherit none of the agent's `HCP_*` settings, so they never hold the agent credential; the evaluator's gateway token reaches it on stdin.

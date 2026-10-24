@@ -127,6 +127,7 @@ class BatchView(_Model):
     batch_id: str
     study_id: str
     sequence: int
+    first_evaluation: int = Field(ge=1, description="the evaluation number of its first candidate")
     state: BatchState
     size: int
     completed: int

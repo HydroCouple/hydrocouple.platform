@@ -77,6 +77,12 @@
       "title": "Completed",
       "type": "integer"
     },
+    "first_evaluation": {
+      "description": "the evaluation number of its first candidate",
+      "minimum": 1,
+      "title": "First Evaluation",
+      "type": "integer"
+    },
     "next_action": {
       "anyOf": [
         {
@@ -124,6 +130,7 @@
     "batch_id",
     "study_id",
     "sequence",
+    "first_evaluation",
     "state",
     "size",
     "completed"

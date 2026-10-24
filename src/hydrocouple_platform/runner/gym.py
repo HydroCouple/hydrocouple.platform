@@ -31,6 +31,7 @@ from .core import Context, HandlerResult, _upload
 from .swmm import _component
 
 LEASE_WAIT_SECONDS = 20.0
+MAX_ERROR = 2000  # the length the agent protocol carries
 
 
 class Gateway:
@@ -113,17 +114,67 @@ def _env(ctx: Context, parameters: dict[str, Any]):
     return config, dims
 
 
+def _evaluate(pool, vectors: list, workers: int, timeout: float, ctx: Context) -> list:
+    """Evaluate in groups of ``workers``, each within ``timeout`` seconds.
+
+    When a group runs over, gymnasium's pool replaces its workers and the group's
+    results are lost, so its candidates are evaluated again one at a time: those
+    that finish keep their result, and only the ones that run over again fail.
+    """
+    from openswmm_gymnasium.optimize import Evaluation
+
+    def over() -> Evaluation:
+        return Evaluation(costs=None, error=f"did not finish within {timeout:g} s "
+                          "(evaluation_timeout_seconds)")
+
+    out: list = []
+    for start in range(0, len(vectors), workers):
+        group = vectors[start:start + workers]
+        done = _within(pool, group, timeout, ctx)
+        if done is None and len(group) == 1:
+            done = [over()]
+        elif done is None:
+            done = [(_within(pool, [v], timeout, ctx) or [over()])[0] for v in group]
+        out.extend(done)
+    return out
+
+
+def _within(pool, vectors: list, timeout: float, ctx: Context) -> list | None:
+    """The pool's results, or None when they took longer than ``timeout`` seconds."""
+    from openswmm_gymnasium.optimize import StudyCancelled
+
+    deadline = time.monotonic() + timeout
+    try:
+        return pool.evaluate(vectors, lambda: ctx.cancel.is_set() or time.monotonic() > deadline)
+    except StudyCancelled:
+        if ctx.cancel.is_set():
+            raise RunnerFailure(EXIT_CANCELLED, "cancelled by the agent") from None
+        return None
+
+
+def _checked(outcome, n_objectives: int) -> tuple[list[float] | None, str | None]:
+    """The costs to report, or an error: one bad candidate must not fail the whole chunk."""
+    if outcome.error is not None:
+        return None, outcome.error[:MAX_ERROR]
+    costs = outcome.costs
+    if costs is None or len(costs) != n_objectives or \
+            not all(math.isfinite(float(c)) for c in costs):
+        return None, f"the evaluation returned invalid costs: {costs!r}"[:MAX_ERROR]
+    return [float(c) for c in costs], None
+
+
 def run(ctx: Context, composition: dict) -> HandlerResult:
     comp = _component(composition)
     parameters = ctx.spec.workload.parameters
     study = parameters.get("study")
-    url, token = os.environ.get("HCP_GATEWAY_URL"), os.environ.get("HCP_RUNNER_TOKEN")
+    url = os.environ.get("HCP_GATEWAY_URL")
+    token = ctx.secrets.get("HCP_RUNNER_TOKEN")  # on stdin, never in the environment
     if not study or not url or not token:
         raise RunnerFailure(EXIT_INVALID_INPUT,
                             "gym.evaluate runs only as a study's pool task, through its agent")
     config, dims = _env(ctx, parameters)
 
-    from openswmm_gymnasium.optimize import StudyCancelled, WorkerPool, split_vector
+    from openswmm_gymnasium.optimize import WorkerPool, split_vector
     from openswmm_gymnasium.spec.envs import json_safe
 
     names = [o["name"] for o in study["objectives"]]
@@ -131,8 +182,13 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
     artifacts: list[tuple[str, ArtifactKind, str]] = []
     counts = {"evaluations": 0, "failed": 0, "chunks": 0, "discarded_chunks": 0}
     ctx.events.emit("lifecycle", "running", f"evaluator for study {study['study_id']}")
-    pool = WorkerPool(config, dims, workers=int(parameters.get("workers", 1)),
-                      seed=study.get("seed"), max_steps=int(parameters["max_steps_per_episode"]))
+    workers = int(parameters.get("workers", 1))
+    timeout = float(parameters.get("evaluation_timeout_seconds", 600))
+    try:
+        pool = WorkerPool(config, dims, workers=workers, seed=study.get("seed"),
+                          max_steps=int(parameters["max_steps_per_episode"]))
+    except RuntimeError as exc:  # the env could not be built: the same on every retry
+        raise RunnerFailure(EXIT_INVALID_INPUT, f"the evaluator could not start: {exc}") from None
     try:
         while True:
             ctx.check_cancel()
@@ -143,10 +199,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
             if chunk is None:
                 time.sleep(float(lease.get("poll_after_seconds") or 1.0))
                 continue
-            try:
-                outcomes = pool.evaluate(chunk["candidates"], ctx.cancel.is_set)
-            except StudyCancelled:
-                raise RunnerFailure(EXIT_CANCELLED, "cancelled by the agent") from None
+            outcomes = _evaluate(pool, chunk["candidates"], workers, timeout, ctx)
             rel = f"evaluations/{chunk['chunk_id']}-{chunk['lease_number']}.jsonl"
             path = ctx.outputs / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -154,19 +207,20 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
             with path.open("w", encoding="utf-8") as fh:
                 pairs = zip(chunk["candidates"], outcomes, strict=True)
                 for i, (vector, outcome) in enumerate(pairs):
+                    costs, error = _checked(outcome, len(names))
                     record = {
                         "evaluation": chunk["first_evaluation"] + i,
                         "decisions": json_safe(split_vector(dims, vector)), "vector": vector,
-                        "objectives": (dict(zip(names, outcome.costs, strict=True))
-                                       if outcome.error is None else None),
-                        "steps": outcome.steps, "error": outcome.error,
+                        "objectives": (dict(zip(names, costs, strict=True))
+                                       if error is None else None),
+                        "steps": outcome.steps,
+                        "error": error if outcome.error is None else outcome.error,
                         "study_id": study["study_id"], "chunk_id": chunk["chunk_id"],
                         "lease_number": chunk["lease_number"], "attempt_id": ctx.attempt_id,
                         "seed": study.get("seed"),
                     }
                     fh.write(json.dumps(record) + "\n")
-                    results.append({"costs": outcome.costs if outcome.error is None else None,
-                                    "steps": outcome.steps, "error": outcome.error})
+                    results.append({"costs": costs, "steps": outcome.steps, "error": error})
             _upload(ctx, rel, path)
             ack = gateway.call("/v1/evaluations/complete", {
                 "chunk_id": chunk["chunk_id"], "lease_number": chunk["lease_number"],

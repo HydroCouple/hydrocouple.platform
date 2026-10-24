@@ -81,7 +81,7 @@ class PlatformPool:
         self._batches = 0
 
     def evaluate(self, vectors, should_stop: Callable[[], bool] = lambda: False) -> list:
-        from openswmm_gymnasium.optimize import Evaluation, StudyCancelled
+        from openswmm_gymnasium.optimize import StudyCancelled
 
         self._batches += 1
         candidates = [np.asarray(v, dtype=float).tolist() for v in vectors]
@@ -89,14 +89,42 @@ class PlatformPool:
                                           idempotency_key=f"{self.study_id}-b{self._batches}")
         view = self._client.wait_for_batch(self.study_id, batch["batch_id"], self._timeout,
                                            should_stop=should_stop)
-        if view["state"] == "QUEUED" and should_stop():
+        # Still queued only when should_stop() said so; cancelled when the study was.
+        if view["state"] in ("QUEUED", "CANCELLED"):
             raise StudyCancelled()
-        if view["state"] != "DONE":
-            study = self._client.study(self.study_id)
-            raise RuntimeError(f"batch {view['batch_id']} ended {view['state']}: "
-                               f"{study.get('failure')}")
-        return [Evaluation(costs=None if r["failed"] else r["costs"], steps=r["steps"],
-                           error=r["error"]) for r in view["results"]]
+        if view["state"] == "FAILED":
+            return self._failed(view)
+        return [_outcome(r) for r in view["results"]]
+
+    def _failed(self, view: dict) -> list:
+        """A failed batch's outcomes: the candidates evaluated before the study failed as
+        recorded, the rest as failures that carry the study's reason. The caller's loop
+        then stops at the first failure, as ``run_study`` does."""
+        from openswmm_gymnasium.optimize import Evaluation
+
+        first, last = view["first_evaluation"], view["first_evaluation"] + view["size"] - 1
+        recorded: dict[int, dict] = {}
+        after = first - 1
+        while after < last:
+            page = self._client.study_evaluations(self.study_id, after=after)
+            for r in page["evaluations"]:
+                if first <= r["evaluation"] <= last:
+                    recorded[r["evaluation"]] = r
+            if page["complete"] or page["next_after"] <= after:
+                break
+            after = page["next_after"]
+        failure = self._client.study(self.study_id).get("failure") or {}
+        reason = failure.get("reason") or "the study failed"
+        return [_outcome(recorded[n]) if n in recorded else
+                Evaluation(costs=None, error=f"not evaluated: {reason}")
+                for n in range(first, last + 1)]
+
+
+def _outcome(record: dict):
+    from openswmm_gymnasium.optimize import Evaluation
+
+    return Evaluation(costs=None if record["failed"] else record["costs"],
+                      steps=record["steps"], error=record["error"])
 
 
 def run_platform_study(env_config, opt, output_dir: str | Path, *, client: PlatformClient,
