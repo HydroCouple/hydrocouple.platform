@@ -1,0 +1,32 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/agent-heartbeat-ack-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted_events": {
+      "title": "Accepted Events",
+      "type": "integer"
+    },
+    "attempt_token": {
+      "title": "Attempt Token",
+      "type": "string"
+    },
+    "cancel_requested": {
+      "title": "Cancel Requested",
+      "type": "boolean"
+    },
+    "lease_expires_at": {
+      "format": "date-time",
+      "title": "Lease Expires At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lease_expires_at",
+    "cancel_requested",
+    "accepted_events",
+    "attempt_token"
+  ],
+  "title": "HeartbeatAck",
+  "type": "object"
+}

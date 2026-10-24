@@ -1,0 +1,466 @@
+{
+  "$defs": {
+    "Actor": {
+      "additionalProperties": false,
+      "description": "Who asked for the work: the human principal and, optionally, an AI agent.",
+      "properties": {
+        "agent_client": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Client"
+        },
+        "agent_client_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Client Version"
+        },
+        "agent_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Session Id"
+        },
+        "conversation_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Ref"
+        },
+        "human_subject": {
+          "title": "Human Subject",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        }
+      },
+      "required": [
+        "human_subject"
+      ],
+      "title": "Actor",
+      "type": "object"
+    },
+    "EgressPolicy": {
+      "description": "What an agent lets leave the execution site in events and results.",
+      "enum": [
+        "metrics-only",
+        "summaries",
+        "full"
+      ],
+      "title": "EgressPolicy",
+      "type": "string"
+    },
+    "InputFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size"
+      ],
+      "title": "InputFile",
+      "type": "object"
+    },
+    "Inputs": {
+      "additionalProperties": false,
+      "properties": {
+        "composition": {
+          "default": "composition.json",
+          "title": "Composition",
+          "type": "string"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/InputFile"
+          },
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Manifest Sha256",
+          "type": "string"
+        },
+        "revision_id": {
+          "title": "Revision Id",
+          "type": "string"
+        },
+        "storage_prefix": {
+          "title": "Storage Prefix",
+          "type": "string"
+        }
+      },
+      "required": [
+        "revision_id",
+        "manifest_sha256",
+        "storage_prefix",
+        "files"
+      ],
+      "title": "Inputs",
+      "type": "object"
+    },
+    "JobClass": {
+      "enum": [
+        "single",
+        "evaluator-pool",
+        "multi-rank",
+        "analysis"
+      ],
+      "title": "JobClass",
+      "type": "string"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "estimated_runtime_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Estimated Runtime Seconds"
+        },
+        "execution_timeout_seconds": {
+          "default": 21600,
+          "exclusiveMinimum": 0,
+          "title": "Execution Timeout Seconds",
+          "type": "integer"
+        },
+        "queue_deadline_seconds": {
+          "default": 86400,
+          "exclusiveMinimum": 0,
+          "title": "Queue Deadline Seconds",
+          "type": "integer"
+        },
+        "retry_budget": {
+          "default": 2,
+          "minimum": 0,
+          "title": "Retry Budget",
+          "type": "integer"
+        }
+      },
+      "title": "Limits",
+      "type": "object"
+    },
+    "Outputs": {
+      "additionalProperties": false,
+      "properties": {
+        "egress_policy": {
+          "$ref": "#/$defs/EgressPolicy",
+          "default": "summaries"
+        },
+        "required_artifacts": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Required Artifacts",
+          "type": "array"
+        },
+        "retention_days": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retention Days"
+        },
+        "storage_prefix": {
+          "title": "Storage Prefix",
+          "type": "string"
+        }
+      },
+      "required": [
+        "storage_prefix",
+        "required_artifacts"
+      ],
+      "title": "Outputs",
+      "type": "object"
+    },
+    "Placement": {
+      "additionalProperties": false,
+      "properties": {
+        "interruption": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "interruptible"
+          ],
+          "title": "Interruption",
+          "type": "string"
+        },
+        "target_id": {
+          "title": "Target Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "target_id"
+      ],
+      "title": "Placement",
+      "type": "object"
+    },
+    "Resources": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "default": 1.0,
+          "exclusiveMinimum": 0,
+          "title": "Cpu",
+          "type": "number"
+        },
+        "gpu": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu"
+        },
+        "job_class": {
+          "$ref": "#/$defs/JobClass",
+          "default": "single"
+        },
+        "memory_gib": {
+          "default": 2.0,
+          "exclusiveMinimum": 0,
+          "title": "Memory Gib",
+          "type": "number"
+        },
+        "pool_size": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Pool Size",
+          "type": "integer"
+        },
+        "profile": {
+          "default": "cpu-small",
+          "title": "Profile",
+          "type": "string"
+        },
+        "ranks": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Ranks",
+          "type": "integer"
+        },
+        "scratch_gib": {
+          "default": 4.0,
+          "minimum": 0,
+          "title": "Scratch Gib",
+          "type": "number"
+        }
+      },
+      "title": "Resources",
+      "type": "object"
+    },
+    "Runtime": {
+      "additionalProperties": false,
+      "properties": {
+        "architecture": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Architecture"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "threads": {
+          "default": 1,
+          "minimum": 1,
+          "title": "Threads",
+          "type": "integer"
+        }
+      },
+      "title": "Runtime",
+      "type": "object"
+    },
+    "Workload": {
+      "additionalProperties": false,
+      "properties": {
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "workflow": {
+          "title": "Workflow",
+          "type": "string"
+        },
+        "workflow_version": {
+          "title": "Workflow Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow",
+        "workflow_version"
+      ],
+      "title": "Workload",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/job-spec-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "actor": {
+      "$ref": "#/$defs/Actor"
+    },
+    "inputs": {
+      "$ref": "#/$defs/Inputs"
+    },
+    "job_id": {
+      "title": "Job Id",
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "organization_id": {
+      "title": "Organization Id",
+      "type": "string"
+    },
+    "outputs": {
+      "$ref": "#/$defs/Outputs"
+    },
+    "placement": {
+      "$ref": "#/$defs/Placement"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "recovery": {
+      "const": "restart",
+      "default": "restart",
+      "title": "Recovery",
+      "type": "string"
+    },
+    "resources": {
+      "$ref": "#/$defs/Resources"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "$ref": "#/$defs/Runtime"
+    },
+    "spec_version": {
+      "const": "1",
+      "default": "1",
+      "title": "Spec Version",
+      "type": "string"
+    },
+    "workload": {
+      "$ref": "#/$defs/Workload"
+    }
+  },
+  "required": [
+    "job_id",
+    "run_id",
+    "organization_id",
+    "project_id",
+    "actor",
+    "workload",
+    "runtime",
+    "inputs",
+    "resources",
+    "placement",
+    "limits",
+    "outputs"
+  ],
+  "title": "JobSpec",
+  "type": "object"
+}

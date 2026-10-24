@@ -1,0 +1,109 @@
+{
+  "$defs": {
+    "AttemptOutcome": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "cancelled",
+        "timed_out"
+      ],
+      "title": "AttemptOutcome",
+      "type": "string"
+    },
+    "FailureClass": {
+      "description": "Evidence-based failure classes; each maps to one retry rule.",
+      "enum": [
+        "invalid_input",
+        "missing_dependency",
+        "out_of_memory",
+        "engine_crash",
+        "interrupted",
+        "capacity",
+        "transfer",
+        "timeout",
+        "lost",
+        "unknown"
+      ],
+      "title": "FailureClass",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-attempt-result-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "attempt_manifest": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt Manifest"
+    },
+    "attempt_manifest_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt Manifest Sha256"
+    },
+    "diagnostics": {
+      "additionalProperties": true,
+      "title": "Diagnostics",
+      "type": "object"
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exit Code"
+    },
+    "failure_class": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FailureClass"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fencing_token": {
+      "minimum": 1,
+      "title": "Fencing Token",
+      "type": "integer"
+    },
+    "outcome": {
+      "$ref": "#/$defs/AttemptOutcome"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "fencing_token",
+    "outcome"
+  ],
+  "title": "AttemptResult",
+  "type": "object"
+}

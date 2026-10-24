@@ -1,0 +1,94 @@
+{
+  "$defs": {
+    "JobClass": {
+      "enum": [
+        "single",
+        "evaluator-pool",
+        "multi-rank",
+        "analysis"
+      ],
+      "title": "JobClass",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/run-accepted-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approval Id"
+    },
+    "budget_remaining": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Budget Remaining"
+    },
+    "compute_target_id": {
+      "title": "Compute Target Id",
+      "type": "string"
+    },
+    "job_class": {
+      "$ref": "#/$defs/JobClass"
+    },
+    "job_id": {
+      "title": "Job Id",
+      "type": "string"
+    },
+    "model_revision_id": {
+      "title": "Model Revision Id",
+      "type": "string"
+    },
+    "next_action": {
+      "title": "Next Action",
+      "type": "string"
+    },
+    "platform_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Platform Session Id"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "platform_session_id",
+    "run_id",
+    "job_id",
+    "status",
+    "job_class",
+    "model_revision_id",
+    "compute_target_id",
+    "next_action"
+  ],
+  "title": "RunAccepted",
+  "type": "object"
+}

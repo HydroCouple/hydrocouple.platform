@@ -1,0 +1,120 @@
+{
+  "$defs": {
+    "FileRole": {
+      "enum": [
+        "composition",
+        "model",
+        "input",
+        "sidecar"
+      ],
+      "title": "FileRole",
+      "type": "string"
+    },
+    "ManifestFile": {
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "$ref": "#/$defs/FileRole"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Original reference as written in the model, for review.",
+          "title": "Source"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size",
+        "role"
+      ],
+      "title": "ManifestFile",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/revision-manifest-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "components": {
+      "description": "component_info_id of every component",
+      "items": {
+        "type": "string"
+      },
+      "title": "Components",
+      "type": "array"
+    },
+    "composition": {
+      "default": "composition.json",
+      "title": "Composition",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/ManifestFile"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "findings": {
+      "description": "Non-blocking observations recorded at packaging.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "packaged_by": {
+      "title": "Packaged By",
+      "type": "string"
+    },
+    "schema": {
+      "const": "hydrocouple.platform/revision-manifest/1",
+      "default": "hydrocouple.platform/revision-manifest/1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "total_bytes": {
+      "minimum": 0,
+      "title": "Total Bytes",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "files",
+    "components",
+    "total_bytes",
+    "created_at",
+    "packaged_by"
+  ],
+  "title": "RevisionManifest",
+  "type": "object"
+}

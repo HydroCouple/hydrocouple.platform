@@ -1,0 +1,32 @@
+HydroCouple Execution Platform
+Copyright 2026 HydroCouple Developers
+
+This product includes software developed by the HydroCouple authors
+(https://github.com/HydroCouple/hydrocouple.platform).
+
+Licensed under the Apache License, Version 2.0. See the LICENSE file for the
+full license text.
+
+--------------------------------------------------------------------------------
+THIRD-PARTY COMPONENTS
+--------------------------------------------------------------------------------
+
+This product depends on, but does not bundle, the following separately
+licensed components. Each remains subject to its own license terms, which
+accompany the component in its own distribution:
+
+  - openswmm (OpenSWMM Engine Python bindings) — Apache License, Version 2.0
+    (optional "runner" dependency). Portions of the underlying engine are
+    derived from USEPA SWMM and reside in the public domain under 17 USC § 105.
+    See the NOTICE file distributed with the openswmm package.
+
+  - HydroCoupleSDK composition and run-manifest JSON Schemas, copied unchanged
+    into src/hydrocouple_platform/schemas/hydrocouple/ — Apache License,
+    Version 2.0.
+
+  - FastAPI, SQLAlchemy, Alembic, psycopg, Pydantic, PyJWT, httpx, jsonschema
+    and other runtime dependencies as declared in pyproject.toml.
+
+The USEPA does not endorse this product, and the names "EPA", "USEPA", and
+"SWMM" are used solely to describe the origin of the public domain material
+referenced above.

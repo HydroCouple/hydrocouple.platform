@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "JobClass": {
+      "enum": [
+        "single",
+        "evaluator-pool",
+        "multi-rank",
+        "analysis"
+      ],
+      "title": "JobClass",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/estimate-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_reasons": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Approval Reasons",
+      "type": "array"
+    },
+    "cost_band": {
+      "default": "unknown",
+      "title": "Cost Band",
+      "type": "string"
+    },
+    "evaluations": {
+      "default": 1,
+      "title": "Evaluations",
+      "type": "integer"
+    },
+    "findings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "job_class": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/JobClass"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
+    },
+    "requires_approval": {
+      "default": false,
+      "title": "Requires Approval",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "ok",
+    "findings"
+  ],
+  "title": "Estimate",
+  "type": "object"
+}

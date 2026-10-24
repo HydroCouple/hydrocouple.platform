@@ -1,0 +1,356 @@
+{
+  "$defs": {
+    "Actor": {
+      "additionalProperties": false,
+      "description": "Who asked for the work: the human principal and, optionally, an AI agent.",
+      "properties": {
+        "agent_client": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Client"
+        },
+        "agent_client_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Client Version"
+        },
+        "agent_session_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Session Id"
+        },
+        "conversation_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Conversation Ref"
+        },
+        "human_subject": {
+          "title": "Human Subject",
+          "type": "string"
+        },
+        "model": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model"
+        },
+        "tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tool Call Id"
+        }
+      },
+      "required": [
+        "human_subject"
+      ],
+      "title": "Actor",
+      "type": "object"
+    },
+    "ArtifactEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "format": {
+          "title": "Format",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "size",
+        "kind",
+        "format"
+      ],
+      "title": "ArtifactEntry",
+      "type": "object"
+    },
+    "ArtifactKind": {
+      "enum": [
+        "run_manifest",
+        "report",
+        "binary_output",
+        "log",
+        "summary",
+        "other"
+      ],
+      "title": "ArtifactKind",
+      "type": "string"
+    },
+    "Provenance": {
+      "additionalProperties": false,
+      "description": "Execution provenance; ``to_prov`` renders it in W3C PROV-JSON terms.",
+      "properties": {
+        "actor": {
+          "$ref": "#/$defs/Actor"
+        },
+        "attempt_id": {
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "attempt_number": {
+          "title": "Attempt Number",
+          "type": "integer"
+        },
+        "composition_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Composition Sha256",
+          "type": "string"
+        },
+        "finished_at": {
+          "format": "date-time",
+          "title": "Finished At",
+          "type": "string"
+        },
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Package path to sha256 of every input used",
+          "title": "Inputs",
+          "type": "object"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "parameters": {
+          "additionalProperties": true,
+          "title": "Parameters",
+          "type": "object"
+        },
+        "profile": {
+          "const": "hydrocouple.platform/provenance/1",
+          "default": "hydrocouple.platform/provenance/1",
+          "title": "Profile",
+          "type": "string"
+        },
+        "revision_id": {
+          "title": "Revision Id",
+          "type": "string"
+        },
+        "revision_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Revision Manifest Sha256",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "runtime": {
+          "$ref": "#/$defs/RuntimeVersions"
+        },
+        "seeds": {
+          "additionalProperties": {
+            "type": "integer"
+          },
+          "title": "Seeds",
+          "type": "object"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "threads": {
+          "title": "Threads",
+          "type": "integer"
+        },
+        "workflow": {
+          "title": "Workflow",
+          "type": "string"
+        },
+        "workflow_version": {
+          "title": "Workflow Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "job_id",
+        "attempt_id",
+        "attempt_number",
+        "revision_id",
+        "revision_manifest_sha256",
+        "composition_sha256",
+        "inputs",
+        "workflow",
+        "workflow_version",
+        "parameters",
+        "threads",
+        "runtime",
+        "actor",
+        "started_at",
+        "finished_at"
+      ],
+      "title": "Provenance",
+      "type": "object"
+    },
+    "RuntimeVersions": {
+      "additionalProperties": false,
+      "properties": {
+        "engine": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Engine"
+        },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Host"
+        },
+        "image": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Image"
+        },
+        "platform": {
+          "title": "Platform",
+          "type": "string"
+        },
+        "python": {
+          "title": "Python",
+          "type": "string"
+        }
+      },
+      "required": [
+        "platform",
+        "python"
+      ],
+      "title": "RuntimeVersions",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/attempt-manifest-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "artifacts": {
+      "items": {
+        "$ref": "#/$defs/ArtifactEntry"
+      },
+      "title": "Artifacts",
+      "type": "array"
+    },
+    "provenance": {
+      "$ref": "#/$defs/Provenance"
+    },
+    "quality": {
+      "additionalProperties": true,
+      "title": "Quality",
+      "type": "object"
+    },
+    "run_manifest": {
+      "default": "run.json",
+      "title": "Run Manifest",
+      "type": "string"
+    },
+    "run_manifest_sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Run Manifest Sha256",
+      "type": "string"
+    },
+    "schema": {
+      "const": "hydrocouple.platform/attempt-manifest/1",
+      "default": "hydrocouple.platform/attempt-manifest/1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "completed",
+        "failed",
+        "stopped"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "run_manifest_sha256",
+    "status",
+    "artifacts",
+    "provenance"
+  ],
+  "title": "AttemptManifest",
+  "type": "object"
+}

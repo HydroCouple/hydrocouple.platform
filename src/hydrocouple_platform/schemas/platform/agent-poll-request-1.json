@@ -1,0 +1,268 @@
+{
+  "$defs": {
+    "AdapterCapabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "adapter": {
+          "title": "Adapter",
+          "type": "string"
+        },
+        "family": {
+          "enum": [
+            "local",
+            "kubernetes",
+            "batch",
+            "serverless",
+            "hpc"
+          ],
+          "title": "Family",
+          "type": "string"
+        },
+        "gpu": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Gpu"
+        },
+        "has_runtime_cap": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "False when the service has no cap; None when it is unknown.",
+          "title": "Has Runtime Cap"
+        },
+        "idempotent_submit": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Idempotent Submit"
+        },
+        "interruption_tolerant": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Interruption Tolerant"
+        },
+        "job_classes": {
+          "items": {
+            "$ref": "#/$defs/JobClass"
+          },
+          "title": "Job Classes",
+          "type": "array"
+        },
+        "max_cpu": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Cpu"
+        },
+        "max_memory_gib": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Memory Gib"
+        },
+        "max_parallel_tasks": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Parallel Tasks"
+        },
+        "max_task_seconds": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Hard runtime cap per task; None when the service has none.",
+          "title": "Max Task Seconds"
+        },
+        "provider_retries": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Retries the service performs itself; must be 0.",
+          "title": "Provider Retries"
+        },
+        "runs_images": {
+          "default": true,
+          "description": "False for the local pool, which runs the installed runner.",
+          "title": "Runs Images",
+          "type": "boolean"
+        },
+        "scratch_gib": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scratch Gib"
+        },
+        "scratch_in_memory": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Scratch In Memory"
+        },
+        "status_integration": {
+          "anyOf": [
+            {
+              "enum": [
+                "direct",
+                "watch",
+                "events",
+                "polling"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Status Integration"
+        },
+        "submission_rate_per_second": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submission Rate Per Second"
+        }
+      },
+      "required": [
+        "adapter",
+        "family",
+        "job_classes"
+      ],
+      "title": "AdapterCapabilities",
+      "type": "object"
+    },
+    "JobClass": {
+      "enum": [
+        "single",
+        "evaluator-pool",
+        "multi-rank",
+        "analysis"
+      ],
+      "title": "JobClass",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-poll-request-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_instance": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Agent Instance",
+      "type": "string"
+    },
+    "agent_version": {
+      "title": "Agent Version",
+      "type": "string"
+    },
+    "capabilities": {
+      "$ref": "#/$defs/AdapterCapabilities"
+    },
+    "free_slots": {
+      "minimum": 0,
+      "title": "Free Slots",
+      "type": "integer"
+    },
+    "held_attempts": {
+      "items": {
+        "type": "string"
+      },
+      "maxItems": 1000,
+      "title": "Held Attempts",
+      "type": "array"
+    },
+    "wait_seconds": {
+      "default": 0,
+      "maximum": 30,
+      "minimum": 0,
+      "title": "Wait Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "agent_instance",
+    "agent_version",
+    "capabilities",
+    "free_slots"
+  ],
+  "title": "PollRequest",
+  "type": "object"
+}

@@ -1,0 +1,14 @@
+# Workplans and plans stay local (CLAUDE.md 5.3); test outputs are for review, not commits.
+workplans/
+test_artifacts/
+
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.DS_Store

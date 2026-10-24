@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "Grant": {
+      "additionalProperties": false,
+      "properties": {
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Headers",
+          "type": "object"
+        },
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "file",
+            "PUT",
+            "GET"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "url": {
+          "title": "Url",
+          "type": "string"
+        }
+      },
+      "required": [
+        "key",
+        "method",
+        "url"
+      ],
+      "title": "Grant",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-grant-fulfillment-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "grant_request_id": {
+      "title": "Grant Request Id",
+      "type": "string"
+    },
+    "grants": {
+      "items": {
+        "$ref": "#/$defs/Grant"
+      },
+      "title": "Grants",
+      "type": "array"
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "problems": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Problems",
+      "type": "array"
+    }
+  },
+  "required": [
+    "grant_request_id",
+    "ok"
+  ],
+  "title": "GrantFulfillment",
+  "type": "object"
+}

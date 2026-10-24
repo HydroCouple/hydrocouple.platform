@@ -1,0 +1,180 @@
+{
+  "$defs": {
+    "AttemptState": {
+      "enum": [
+        "LEASED",
+        "QUEUED",
+        "STARTING",
+        "RUNNING",
+        "FINALIZING",
+        "SUCCEEDED",
+        "FAILED",
+        "CANCELLED",
+        "TIMED_OUT",
+        "LOST"
+      ],
+      "title": "AttemptState",
+      "type": "string"
+    },
+    "Event": {
+      "additionalProperties": false,
+      "properties": {
+        "agent_clock_seconds": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Agent monotonic clock, robust to wall-clock skew.",
+          "title": "Agent Clock Seconds"
+        },
+        "completed": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed"
+        },
+        "event_id": {
+          "maxLength": 64,
+          "minLength": 8,
+          "title": "Event Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/EventKind"
+        },
+        "message": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Message"
+        },
+        "occurred_at": {
+          "format": "date-time",
+          "title": "Occurred At",
+          "type": "string"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "sequence": {
+          "minimum": 0,
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "total": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Total"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Unit"
+        }
+      },
+      "required": [
+        "event_id",
+        "sequence",
+        "kind",
+        "occurred_at"
+      ],
+      "title": "Event",
+      "type": "object"
+    },
+    "EventKind": {
+      "enum": [
+        "lifecycle",
+        "progress",
+        "warning",
+        "log"
+      ],
+      "title": "EventKind",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-heartbeat-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "events": {
+      "items": {
+        "$ref": "#/$defs/Event"
+      },
+      "maxItems": 500,
+      "title": "Events",
+      "type": "array"
+    },
+    "fencing_token": {
+      "minimum": 1,
+      "title": "Fencing Token",
+      "type": "integer"
+    },
+    "provider_reference": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider Reference"
+    },
+    "state": {
+      "$ref": "#/$defs/AttemptState"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "fencing_token",
+    "state"
+  ],
+  "title": "Heartbeat",
+  "type": "object"
+}
