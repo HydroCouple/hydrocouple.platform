@@ -16,6 +16,7 @@ from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import (
     Actor,
     Inputs,
+    JobClass,
     JobSpec,
     Limits,
     Outputs,
@@ -128,6 +129,13 @@ class RunServices(ServiceBase):
         return _Checked(project, revision, target, workflow, parameters, resources, findings,
                         request_hash)
 
+    @staticmethod
+    def _run_findings(checked: _Checked) -> list[str]:
+        if checked.workflow.job_class == JobClass.EVALUATOR_POOL:
+            return [f"{checked.workflow.name}@{checked.workflow.version} evaluates study "
+                    "candidates; create a study to use it"]
+        return []
+
     def _spec(self, job_id, run_id, project, revision, target, workflow, parameters, resources,
               req: RunRequest, actor: Actor) -> JobSpec:
         threads = int(parameters.get("threads", 1))
@@ -195,6 +203,7 @@ class RunServices(ServiceBase):
     def estimate(self, principal: Principal, req: RunRequest) -> Estimate:
         with self.tx() as s:
             checked = self._check(s, principal, req, "viewer")
+            checked.findings.extend(self._run_findings(checked))
             reasons: list[str] = []
             if principal.agent_session_id:
                 reasons = self._budget_reasons(s, self._agent_session(
@@ -248,6 +257,7 @@ class RunServices(ServiceBase):
             existing = self._existing(s, org_id, key, checked.request_hash)
             if existing is not None:
                 return existing
+            checked.findings.extend(self._run_findings(checked))
             if checked.findings:
                 raise PlatformError(
                     ErrorCode.CAPABILITY_UNSUPPORTED if checked.target.capabilities
@@ -340,10 +350,18 @@ class RunServices(ServiceBase):
             if approval.expires_at <= self.now():
                 raise PlatformError(ErrorCode.INVALID_TRANSITION,
                                     f"approval {approval.id} expired")
-            job = s.get(Job, approval.job_id, with_for_update=True)
             approval.state = "APPROVED" if approve else "REJECTED"
             approval.resolved_by, approval.resolved_at, approval.note = (
                 principal.user_id, self.now(), note)
+            if approval.study_id is not None:
+                study_state = self.resolve_study_approval(  # type: ignore[attr-defined]
+                    s, approval, approve, note)
+                self.audit(s, approval.organization_id, human_actor(principal),
+                           "approval." + approval.state.lower(), "approval", approval.id,
+                           {"study_id": approval.study_id, "note": note})
+                return {"approval_id": approval.id, "state": approval.state,
+                        "study_state": study_state}
+            job = s.get(Job, approval.job_id, with_for_update=True)
             if job.state == JobState.PENDING_APPROVAL.value:
                 if approve:
                     self._set_state(job, JobState.ACCEPTED)
@@ -362,7 +380,8 @@ class RunServices(ServiceBase):
             rows = s.scalars(select(Approval).where(
                 Approval.project_id == project_id, Approval.state == "PENDING"))
             return [{"approval_id": a.id, "run_id": a.run_id, "job_id": a.job_id,
-                     "reasons": a.reasons, "expires_at": a.expires_at.isoformat()} for a in rows]
+                     "study_id": a.study_id, "reasons": a.reasons,
+                     "expires_at": a.expires_at.isoformat()} for a in rows]
 
     # -- cancellation -----------------------------------------------------------------
 

@@ -37,13 +37,22 @@ from ..contracts.agent import (
     ResultAck,
 )
 from ..contracts.errors import ErrorCode, PlatformError
-from ..contracts.jobs import EgressPolicy, FailureClass
+from ..contracts.jobs import EgressPolicy, FailureClass, JobClass
 from ..contracts.manifests import AttemptManifest, sha256_of
 from ..contracts.states import AttemptState
+from ..contracts.studies import (
+    CompletionAck,
+    EvaluationCompletion,
+    EvaluationLeaseRequest,
+    EvaluationLeaseResponse,
+    EvaluationResult,
+    ResultObject,
+)
 from ..runner import EXIT_CANCELLED, EXIT_CLASS
 from ..storage import StorageBackend
 from .adapters import Observation, SchedulerAdapter
-from .egress import filter_diagnostics, filter_event
+from .egress import SUMMARY_LIMIT, filter_diagnostics, filter_event
+from .gateway import RunnerGateway
 
 log = logging.getLogger(__name__)
 MAX_BUFFERED_EVENTS = 10_000
@@ -77,6 +86,15 @@ class AgentClient:
     def result(self, token: str, res: AttemptResult) -> ResultAck:
         return ResultAck.model_validate(self._post("/v1/agent/result", res, token))
 
+    def lease_evaluations(self, token: str, req: EvaluationLeaseRequest
+                          ) -> EvaluationLeaseResponse:
+        return EvaluationLeaseResponse.model_validate(
+            self._post("/v1/agent/evaluations/lease", req, token))
+
+    def complete_evaluations(self, token: str, body: EvaluationCompletion) -> CompletionAck:
+        return CompletionAck.model_validate(
+            self._post("/v1/agent/evaluations/complete", body, token))
+
     def close(self) -> None:
         self._http.close()
 
@@ -96,11 +114,15 @@ class _Held:
 
 class Agent:
     def __init__(self, client: AgentClient, adapter: SchedulerAdapter, store: StorageBackend,
-                 store_uri: str, egress: EgressPolicy, instance: str | None = None):
+                 store_uri: str, egress: EgressPolicy, instance: str | None = None,
+                 gateway_host: str = "127.0.0.1"):
         self.client, self.adapter, self.store = client, adapter, store
         self.store_uri, self.egress = store_uri, egress
         self.instance = instance or f"{socket.gethostname()}-{os.getpid()}"
         self.held: dict[str, _Held] = {}
+        # Started with the first evaluator task; runners reach the control plane only here.
+        self.gateway: RunnerGateway | None = None
+        self.gateway_host = gateway_host
         self.heartbeat_interval = 15.0
         # Set when the target is revoked: report on held attempts, claim nothing new.
         self.draining = False
@@ -164,8 +186,13 @@ class Agent:
         if lease.attempt_id in self.held:
             return
         try:
-            handle = self.adapter.submit(lease, self.store_uri)
+            env = self._runner_env(lease)
+            # Only evaluator tasks get extra environment; other submits keep the plain call.
+            handle = (self.adapter.submit(lease, self.store_uri, env=env) if env else
+                      self.adapter.submit(lease, self.store_uri))
         except Exception as exc:
+            if self.gateway is not None:
+                self.gateway.unregister(lease.attempt_id)
             # Report it at once so the job is retried now, not after the lease expires.
             log.exception("could not start attempt %s", lease.attempt_id)
             self.held[lease.attempt_id] = _Held(
@@ -263,8 +290,67 @@ class Agent:
 
     def _forget(self, attempt_id: str) -> None:
         held = self.held.pop(attempt_id, None)
+        if self.gateway is not None:
+            self.gateway.unregister(attempt_id)
         if held is not None and held.handle is not None:
             self.adapter.cleanup(held.handle)
+
+    def close(self) -> None:
+        if self.gateway is not None:
+            self.gateway.close()
+            self.gateway = None
+
+    # -- evaluator tasks: the runner gateway calls these from its own threads -------------
+
+    def _runner_env(self, lease: LeaseGrant) -> dict[str, str] | None:
+        if lease.spec.resources.job_class != JobClass.EVALUATOR_POOL:
+            return None
+        if self.gateway is None:
+            self.gateway = RunnerGateway(self, host=self.gateway_host)
+        return {"HCP_GATEWAY_URL": self.gateway.url,
+                "HCP_RUNNER_TOKEN": self.gateway.register(lease.attempt_id)}
+
+    def _held_task(self, attempt_id: str) -> _Held:
+        held = self.held.get(attempt_id)
+        if held is None or held.final is not None:
+            raise PlatformError(ErrorCode.STALE_ATTEMPT,
+                                f"attempt {attempt_id} is not running here")
+        return held
+
+    def lease_evaluations(self, attempt_id: str, body: dict) -> dict:
+        held = self._held_task(attempt_id)
+        req = EvaluationLeaseRequest(attempt_id=attempt_id,
+                                     fencing_token=held.lease.fencing_token,
+                                     wait_seconds=min(float(body.get("wait_seconds", 0)), 20.0))
+        return self.client.lease_evaluations(held.token, req).model_dump(mode="json")
+
+    def complete_evaluations(self, attempt_id: str, body: dict) -> dict:
+        """Check the chunk's records object in this site's storage, filter candidate error
+        text by the egress policy, and report the results."""
+        held = self._held_task(attempt_id)
+        obj = ResultObject.model_validate(body.get("object"))
+        prefix = f"{held.lease.spec.outputs.storage_prefix}{attempt_id}/evaluations/"
+        if not obj.key.startswith(prefix):
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"evaluation records must be stored under {prefix}")
+        if self.store.stat(obj.key) != (obj.size, obj.sha256):
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"{obj.key} is missing or does not match its size or sha256")
+        results = [self._filter_result(EvaluationResult.model_validate(r))
+                   for r in body.get("results") or []]
+        completion = EvaluationCompletion(
+            attempt_id=attempt_id, fencing_token=held.lease.fencing_token,
+            chunk_id=body.get("chunk_id"), lease_number=body.get("lease_number"),
+            results=results, object=obj)
+        return self.client.complete_evaluations(held.token, completion).model_dump(mode="json")
+
+    def _filter_result(self, result: EvaluationResult) -> EvaluationResult:
+        if result.error is None or self.egress == EgressPolicy.FULL:
+            return result
+        if self.egress == EgressPolicy.METRICS_ONLY:
+            return result.model_copy(update={
+                "error": "evaluation failed (details withheld by this site's egress policy)"})
+        return result.model_copy(update={"error": result.error[:SUMMARY_LIMIT]})
 
     # -- results ----------------------------------------------------------------------
 

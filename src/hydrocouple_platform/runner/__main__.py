@@ -15,7 +15,8 @@ from . import EXIT_INVALID_INPUT, EXIT_OK, EXIT_UNKNOWN, RunnerFailure
 from .core import Context, Events, install_signal_handlers, load_composition, pin_threads, publish
 from .core import stage_inputs as _stage
 
-HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm"}
+HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm",
+            "gym.evaluate": "hydrocouple_platform.runner.gym"}
 
 
 def main(argv: list[str] | None = None) -> int:

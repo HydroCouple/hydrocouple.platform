@@ -68,8 +68,39 @@ SWMM_SIMULATION_V1 = Workflow(
     description="Run one SWMM model to completion with the OpenSWMM engine.",
 )
 
+GYM_EVALUATE_V1 = Workflow(
+    name="gym.evaluate",
+    version="1",
+    job_class=JobClass.EVALUATOR_POOL,
+    handler="gym.evaluate",
+    allowed_components=frozenset({OPENSWMM_ENGINE_COMPONENT}),
+    parameters_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["env_config"],
+        "properties": {
+            # An openswmm_gymnasium EnvConfig; inp_path is the model's path in the revision.
+            "env_config": {"type": "object"},
+            "max_steps_per_episode": {"type": "integer", "minimum": 1, "default": 10_000},
+            "threads": {"type": "integer", "minimum": 1, "maximum": 64, "default": 1},
+            # Engine processes per task; each keeps its env loaded across evaluations.
+            "workers": {"type": "integer", "minimum": 1, "maximum": 32, "default": 1},
+            "evaluation_timeout_seconds": {
+                "type": "number", "minimum": 1, "maximum": 86_400, "default": 600,
+            },
+            "idle_timeout_seconds": {
+                "type": "number", "minimum": 10, "maximum": 86_400, "default": 600,
+            },
+        },
+    },
+    required_artifacts=("run.json", "attempt.json"),
+    description="Evaluate study candidates on an openswmm_gymnasium env: one episode per "
+                "candidate, the engine kept loaded across evaluations.",
+)
+
 REGISTRY: dict[tuple[str, str], Workflow] = {
     (SWMM_SIMULATION_V1.name, SWMM_SIMULATION_V1.version): SWMM_SIMULATION_V1,
+    (GYM_EVALUATE_V1.name, GYM_EVALUATE_V1.version): GYM_EVALUATE_V1,
 }
 
 

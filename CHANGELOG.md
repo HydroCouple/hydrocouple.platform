@@ -12,3 +12,6 @@ First implementation of the cloud execution plan (milestones M1 to M3).
 - Execution agent with egress filtering, storage grants, output verification, buffering through control-plane outages, and the local-pool adapter.
 - Packaging of SWMM models as one-component HydroCouple compositions, including external files.
 - `swmm.simulation@1` runner on the OpenSWMM engine, writing a `run-1.0` run manifest and a platform attempt manifest.
+- Studies (M3b): ask/tell batches evaluated on evaluator pools, with fenced chunk leases, re-leasing after task loss, failed-candidate policies, per-session evaluation budgets and approvals, lineage, a study manifest and the Pareto set.
+- `gym.evaluate@1` evaluator tasks on `openswmm_gymnasium`, reached through the agent's runner gateway; `run_platform_study` drives gymnasium's optimizers on the platform.
+- Migration `0002` for studies, batches and evaluation chunks.

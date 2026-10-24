@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "EvaluationResult": {
+      "additionalProperties": false,
+      "description": "One candidate as an evaluator reports it.",
+      "properties": {
+        "costs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Costs"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "maxLength": 2000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "steps": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Steps",
+          "type": "integer"
+        }
+      },
+      "title": "EvaluationResult",
+      "type": "object"
+    },
+    "ResultObject": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "size"
+      ],
+      "title": "ResultObject",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-evaluation-completion-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "chunk_id": {
+      "title": "Chunk Id",
+      "type": "string"
+    },
+    "fencing_token": {
+      "minimum": 1,
+      "title": "Fencing Token",
+      "type": "integer"
+    },
+    "lease_number": {
+      "minimum": 1,
+      "title": "Lease Number",
+      "type": "integer"
+    },
+    "object": {
+      "$ref": "#/$defs/ResultObject"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/EvaluationResult"
+      },
+      "minItems": 1,
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "fencing_token",
+    "chunk_id",
+    "lease_number",
+    "results",
+    "object"
+  ],
+  "title": "EvaluationCompletion",
+  "type": "object"
+}

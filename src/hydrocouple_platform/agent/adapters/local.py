@@ -56,7 +56,7 @@ class LocalPoolAdapter:
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             adapter=self.name, family="local",
-            job_classes=[JobClass.SINGLE, JobClass.ANALYSIS],
+            job_classes=[JobClass.SINGLE, JobClass.EVALUATOR_POOL, JobClass.ANALYSIS],
             has_runtime_cap=False, max_task_seconds=None, max_parallel_tasks=1,
             max_cpu=float(os.cpu_count() or 1), max_memory_gib=round(_memory_gib(), 2),
             gpu=[], scratch_gib=round(shutil.disk_usage(self.work_root).free / 1024**3, 2),
@@ -68,7 +68,8 @@ class LocalPoolAdapter:
         running = sum(1 for p in self._procs.values() if p.process.poll() is None)
         return max(self.slots - running, 0)
 
-    def submit(self, lease: LeaseGrant, store_uri: str) -> str:
+    def submit(self, lease: LeaseGrant, store_uri: str,
+               env: dict[str, str] | None = None) -> str:
         handle = lease.attempt_id
         if handle in self._procs:  # idempotent: the same attempt is never started twice
             return handle
@@ -76,7 +77,7 @@ class LocalPoolAdapter:
         workdir.mkdir(parents=True, exist_ok=True)
         spec_path = workdir / "spec.json"
         spec_path.write_text(lease.spec.model_dump_json(indent=2), encoding="utf-8")
-        env = dict(os.environ, OMP_NUM_THREADS=str(lease.spec.runtime.threads),
+        env = dict(os.environ, **(env or {}), OMP_NUM_THREADS=str(lease.spec.runtime.threads),
                    PYTHONUNBUFFERED="1")
         stderr = open(workdir / "runner.stderr.log", "wb")
         process = subprocess.Popen(

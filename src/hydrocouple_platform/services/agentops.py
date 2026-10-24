@@ -280,9 +280,11 @@ class AgentServices(ServiceBase):
             job, attempt = self._locked(s, target_id, res.attempt_id)
             run = s.get(Run, job.run_id, with_for_update=True)
             if (attempt.state == AttemptState.SUCCEEDED.value
-                    and run.canonical_attempt_id == attempt.id
-                    and res.outcome == AttemptOutcome.SUCCEEDED):
-                return ResultAck(job_state=job.state, canonical=True, retry_scheduled=False)
+                    and res.outcome == AttemptOutcome.SUCCEEDED
+                    and (run.canonical_attempt_id == attempt.id or job.study_id is not None)):
+                # A repeated report of a result already published.
+                return ResultAck(job_state=job.state, canonical=job.study_id is None,
+                                 retry_scheduled=False)
             self._authority(job, attempt, res.fencing_token)
             spec = JobSpec.model_validate(job.spec)
 
@@ -349,10 +351,14 @@ class AgentServices(ServiceBase):
         attempt.finished_at, attempt.exit_code = now, res.exit_code
         attempt.manifest = res.attempt_manifest
         attempt.manifest_sha256 = res.attempt_manifest_sha256
-        canonical = run.canonical_attempt_id is None
+        # An evaluator task is one of many under its study's run; the study, not the run,
+        # holds the results, so every task's artifacts are recorded and none is canonical.
+        pool_task = job.study_id is not None
+        canonical = run.canonical_attempt_id is None and not pool_task
         if canonical:
             run.canonical_attempt_id, run.published_at = attempt.id, now
             run.summary = {"status": manifest.status, "quality": manifest.quality}
+        if canonical or pool_task:
             prefix = f"{spec.outputs.storage_prefix}{attempt.id}/"
             for a in manifest.artifacts:
                 s.add(Artifact(id=new_id("art"), organization_id=job.organization_id,
@@ -361,6 +367,8 @@ class AgentServices(ServiceBase):
                                sha256=a.sha256, size=a.size))
         self.audit(s, job.organization_id, {"target_id": job.target_id}, "run.publish", "run",
                    run.id, {"attempt_id": attempt.id, "canonical": canonical})
+        if pool_task:
+            self.study_attempt_ended(s, job, attempt, None)  # type: ignore[attr-defined]
         return ResultAck(job_state=job.state, canonical=canonical, retry_scheduled=False)
 
     def _fail(self, s: Session, job: Job, attempt: Attempt, res: AttemptResult) -> ResultAck:
@@ -378,6 +386,16 @@ class AgentServices(ServiceBase):
     def _end_attempt(self, s, job, attempt, terminal: AttemptState, failure_class: FailureClass,
                      exit_code: int | None, diagnostics: dict[str, Any],
                      cancelled: bool = False) -> ResultAck:
+        ack = self._end_attempt_state(s, job, attempt, terminal, failure_class, exit_code,
+                                      diagnostics, cancelled)
+        if job.study_id is not None:
+            # Its chunks go back to the queue; the pool is topped up if work remains.
+            self.study_attempt_ended(s, job, attempt, failure_class)  # type: ignore[attr-defined]
+        return ack
+
+    def _end_attempt_state(self, s, job, attempt, terminal: AttemptState,
+                           failure_class: FailureClass, exit_code: int | None,
+                           diagnostics: dict[str, Any], cancelled: bool) -> ResultAck:
         attempt.state = terminal.value
         attempt.failure_class = failure_class.value
         attempt.exit_code = exit_code
@@ -508,14 +526,21 @@ class AgentServices(ServiceBase):
                 select(Job).where(Job.state == JobState.LEASABLE.value,
                                   Job.queue_deadline_at < now)
                 .limit(limit).with_for_update(skip_locked=True)):
+                if job.state != JobState.LEASABLE.value:
+                    continue  # its study ended earlier in this pass and cancelled it
                 self._set_state(job, JobState.TIMED_OUT, failure={
                     "class": FailureClass.CAPACITY.value,
                     "reason": "no capacity claimed the job before its queue deadline"})
+                self.study_job_timed_out_in_queue(s, job)  # type: ignore[attr-defined]
                 counts["queue_timeouts"] += 1
             for approval in s.scalars(
                 select(Approval).where(Approval.state == "PENDING", Approval.expires_at < now)
                 .limit(limit).with_for_update(skip_locked=True)):
                 approval.state = "EXPIRED"
+                if approval.study_id is not None:
+                    self.expire_study_approval(s, approval)  # type: ignore[attr-defined]
+                    counts["approvals_expired"] += 1
+                    continue
                 job = s.get(Job, approval.job_id, with_for_update=True)
                 if job.state == JobState.PENDING_APPROVAL.value:
                     self._set_state(job, JobState.REJECTED,
@@ -532,4 +557,5 @@ class AgentServices(ServiceBase):
                     if rev.state == "VERIFYING":
                         rev.state = "FAILED"
                 counts["grants_expired"] += 1
+        counts.update(self.reconcile_studies(limit))  # type: ignore[attr-defined]
         return counts

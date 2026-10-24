@@ -82,9 +82,13 @@ def main(argv: list[str] | None = None) -> int:
                                   ("HCP_AGENT_CREDENTIAL", credential)) if not v]
         if missing:
             parser.error("missing " + ", ".join(missing))
-        Agent(AgentClient(args.control_plane, credential),
-              LocalPoolAdapter(args.work_root, slots=args.slots), open_store(args.store),
-              args.store, EgressPolicy(args.egress)).run_forever(_stop_event())
+        execution_agent = Agent(AgentClient(args.control_plane, credential),
+                                LocalPoolAdapter(args.work_root, slots=args.slots),
+                                open_store(args.store), args.store, EgressPolicy(args.egress))
+        try:
+            execution_agent.run_forever(_stop_event())
+        finally:
+            execution_agent.close()
     elif args.command == "bootstrap-org":
         org_id = _services().bootstrap_organization(args.name, args.issuer, args.subject,
                                                     args.email)
