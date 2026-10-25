@@ -10,9 +10,11 @@ from .auth import Principal, UserTokenVerifier, VerifiedClaims
 from .catalog import CatalogServices
 from .revisions import RevisionServices
 from .runs import RunServices
+from .studies import StudyServices
 
 
-class PlatformServices(CatalogServices, RevisionServices, RunServices, AgentServices):
+class PlatformServices(CatalogServices, RevisionServices, RunServices, StudyServices,
+                       AgentServices):
     """All platform operations behind one interface."""
 
 

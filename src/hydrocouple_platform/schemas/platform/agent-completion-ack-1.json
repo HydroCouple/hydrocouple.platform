@@ -1,0 +1,28 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/agent-completion-ack-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "accepted": {
+      "title": "Accepted",
+      "type": "boolean"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    }
+  },
+  "required": [
+    "accepted"
+  ],
+  "title": "CompletionAck",
+  "type": "object"
+}

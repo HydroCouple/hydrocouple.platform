@@ -50,6 +50,10 @@ agent = [
 runner = [
     "openswmm>=6.0.0a4.dev1",
 ]
+# The gym.evaluate@1 evaluator and the run_platform_study client driver.
+gym = [
+    "openswmm.gymnasium[spec,platypus]>=0.1.0.dev0",
+]
 dev = [
     "hydrocouple.platform[server,agent,runner]",
     "pytest>=8.0",

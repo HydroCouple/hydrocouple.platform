@@ -129,6 +129,7 @@
         "binary_output",
         "log",
         "summary",
+        "evaluations",
         "other"
       ],
       "title": "ArtifactKind",

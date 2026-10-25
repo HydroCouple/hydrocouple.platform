@@ -20,7 +20,7 @@ These records implement the cloud execution plan revised on October 15, 2026 (sc
 
 ## 3. Job classes
 
-**Decision.** `single`, `evaluator-pool`, `multi-rank` and `analysis`. Release 1 runs `single`. The spec and capability checks already carry pool size and ranks, so evaluator pools (M3b) and multi-rank jobs need no contract change.
+**Decision.** `single`, `evaluator-pool`, `multi-rank` and `analysis`. `single` and `evaluator-pool` run (the pool since M3b, §10). The spec and capability checks already carry ranks, so multi-rank jobs need no contract change.
 
 ## 4. Compositions are the unit of submission; the attempt manifest sits beside the run manifest
 
@@ -66,6 +66,60 @@ Authorization is evaluated for the human; limits are evaluated for the session. 
 ## 9. Storage grants are minted by the agent
 
 **Decision.** Uploads, downloads and checksum verification are requested through the control plane and answered by the target's agent, using the site's own storage identity. The agent grants only keys under `revisions/` and `runs/`. A revision becomes `READY` only after the agent has verified every object's size and SHA-256. The runner verifies every input again before running.
+
+## 10. Studies are ask/tell; a pool is task jobs; a chunk is the evaluation lease
+
+**Decision.** A study is a registered evaluation function. It records:
+
+- a revision;
+- an evaluator workflow and its parameters;
+- the decision dimensions and the objectives;
+- a seed;
+- a failed-candidate policy (`fail` or `penalty`, as in `openswmm_gymnasium`);
+- an evaluation budget and a pool size.
+
+Callers submit batches of candidates and read back their costs. The optimizer always runs with the caller: the managed algorithms run through `hydrocouple_platform.gym.run_platform_study`, and an AI agent can run its own search. The control plane never imports gymnasium.
+
+**The pool.** An evaluator pool of size N is N `evaluator-pool` task jobs under the study's run. Each task keeps the engine loaded. Each task is a normal job with attempts, fencing and retries, and its attempt manifest is recorded, but no task is the run's canonical result: the study holds the results.
+
+**Chunks.** A batch is split into chunks of up to 32 candidates, about two per task. A chunk is leased with a lease number that fences its completion, which is accepted only:
+
+- from the holding attempt;
+- at the current lease number;
+- while that attempt holds its job.
+
+A late result from an earlier lease is discarded. When an attempt ends, its chunks are released, and the reconciler re-offers chunks whose leases expired. After three deliveries without a result, the chunk's candidates fail under the study's policy.
+
+A task asking for a lease while it still holds a chunk gets that chunk again: the earlier answer was lost on the way.
+
+**Evaluations.** Each evaluation must finish within the study's `evaluation_timeout_seconds`. One that runs over fails as a candidate, under the study's policy, and the task carries on. So does a candidate that returns a long error or a non-finite cost: its error is cut to 2,000 characters, and invalid costs become an error.
+
+**Rows and records.** Rows are per study, batch and chunk, never per evaluation. The evaluator writes each chunk's records as an append-only JSON-lines object in the target's storage. The chunk row keeps the object's key and SHA-256, and the study manifest indexes them.
+
+**Retiring tasks.** A task retires when the study has ended, or when it has been idle for the idle timeout. The control plane decides this under the study lock, so a batch submitted at the same moment starts a new task. Every batch submission, every task end and the reconciler top the pool back up to N while work remains.
+
+**A pool that cannot work.** The pool is not replaced forever:
+
+- An evaluator that cannot start fails the study at once, as invalid input.
+- After three tasks in a row fail without completing a chunk, the study fails. Any completed chunk resets the count.
+- A queued task that passes its queue deadline fails the study only when it is the study's last task.
+
+**Runner gateway.** An evaluator talks to its agent through a runner gateway: loopback HTTP for the local pool, with a token per attempt. The token reaches the runner on stdin, never in its environment, and no runner inherits the agent's `HCP_*` settings, so runners never hold the agent credential. The agent relays each call with its own credential and the attempt token. It verifies each records object in storage, and applies the egress policy to candidate error text. Objective values are metrics and always travel.
+
+**Budgets.** An agent session's budget gains `max_evaluations`. A study reserves its evaluation budget when it is created, and its pool size against the session's concurrent-attempt limit. A study beyond the session's budget is `PENDING_APPROVAL`. Only a person's approval moves it on, and until then it has no tasks and cannot be closed. An agent session submits batches only to studies it created.
+
+**Rules out.**
+
+- Evaluation rows in PostgreSQL.
+- Optimizers running inside the control plane.
+- Runners with platform credentials.
+
+**Known limits.**
+
+- Every lease and completion for one study takes the study's row lock. That is measured fine for a few tasks: 1,000 twin-tank evaluations on three tasks took about a minute. Pools of hundreds of tasks will need the lock narrowed.
+- A pool's size is not checked against the target's capacity. Tasks beyond it wait in the queue.
+- Under the `fail` policy, chunks run in parallel, so a study can fail on a later chunk while earlier ones are still unevaluated. `run_platform_study` writes the records evaluated before the failure, as `run_study` does, and reports the rest as not evaluated, where `run_study` would have evaluated them.
+- Platypus draws from Python's `random`, which `run_study` does not seed. `run_platform_study` seeds it with the study's seed, so a same-seeded local comparison must seed it too.
 
 ## Out of release 1
 

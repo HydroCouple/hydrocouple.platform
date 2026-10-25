@@ -1,0 +1,92 @@
+{
+  "$defs": {
+    "EvaluationChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "batch_id": {
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "chunk_id": {
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "first_evaluation": {
+          "minimum": 1,
+          "title": "First Evaluation",
+          "type": "integer"
+        },
+        "lease_expires_at": {
+          "format": "date-time",
+          "title": "Lease Expires At",
+          "type": "string"
+        },
+        "lease_number": {
+          "minimum": 1,
+          "title": "Lease Number",
+          "type": "integer"
+        },
+        "start": {
+          "description": "index of the first candidate within its batch",
+          "minimum": 0,
+          "title": "Start",
+          "type": "integer"
+        },
+        "study_id": {
+          "title": "Study Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "lease_number",
+        "study_id",
+        "batch_id",
+        "start",
+        "first_evaluation",
+        "candidates",
+        "lease_expires_at"
+      ],
+      "title": "EvaluationChunk",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-evaluation-lease-response-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "chunk": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/EvaluationChunk"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "done": {
+      "default": false,
+      "title": "Done",
+      "type": "boolean"
+    },
+    "poll_after_seconds": {
+      "default": 1.0,
+      "title": "Poll After Seconds",
+      "type": "number"
+    }
+  },
+  "title": "EvaluationLeaseResponse",
+  "type": "object"
+}

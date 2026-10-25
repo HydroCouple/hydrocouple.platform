@@ -102,6 +102,7 @@ class ArtifactKind(str, Enum):
     BINARY_OUTPUT = "binary_output"
     LOG = "log"
     SUMMARY = "summary"
+    EVALUATIONS = "evaluations"
     OTHER = "other"
 
 

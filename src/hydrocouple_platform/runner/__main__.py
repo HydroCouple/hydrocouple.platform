@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -15,7 +16,8 @@ from . import EXIT_INVALID_INPUT, EXIT_OK, EXIT_UNKNOWN, RunnerFailure
 from .core import Context, Events, install_signal_handlers, load_composition, pin_threads, publish
 from .core import stage_inputs as _stage
 
-HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm"}
+HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm",
+            "gym.evaluate": "hydrocouple_platform.runner.gym"}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -34,9 +36,15 @@ def main(argv: list[str] | None = None) -> int:
         events.emit("lifecycle", "failed", f"the job spec is invalid: {exc}")
         return EXIT_INVALID_INPUT
 
+    try:
+        secrets = _secrets()
+    except ValueError as exc:
+        events.emit("lifecycle", "failed", f"the secrets on stdin are invalid: {exc}")
+        return EXIT_INVALID_INPUT
     pin_threads(spec.runtime.threads)
     ctx = Context(spec=spec, attempt_id=args.attempt_id, attempt_number=args.attempt_number,
-                  workdir=args.workdir, store=open_store(args.store), events=events)
+                  workdir=args.workdir, store=open_store(args.store), events=events,
+                  secrets=secrets)
     install_signal_handlers(ctx)
     ctx.outputs.mkdir(parents=True, exist_ok=True)
     workload = spec.workload
@@ -64,6 +72,17 @@ def main(argv: list[str] | None = None) -> int:
         _diagnostics(ctx, {"message": str(exc), "traceback": traceback.format_exc()[-4000:]})
         events.emit("lifecycle", "failed", f"{type(exc).__name__}: {exc}")
         return EXIT_UNKNOWN
+
+
+def _secrets() -> dict[str, str]:
+    """A JSON object of strings on stdin, when the agent says it sent one."""
+    if os.environ.get("HCP_RUNNER_SECRETS_STDIN") != "1":
+        return {}
+    data = json.loads(sys.stdin.read() or "{}")
+    if not isinstance(data, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
+        raise ValueError("expected an object of strings")
+    return data
 
 
 def _diagnostics(ctx: Context, data: dict) -> None:

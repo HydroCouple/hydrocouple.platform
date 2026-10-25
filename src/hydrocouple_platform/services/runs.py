@@ -16,6 +16,7 @@ from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import (
     Actor,
     Inputs,
+    JobClass,
     JobSpec,
     Limits,
     Outputs,
@@ -39,6 +40,7 @@ from ..db.models import (
     Project,
     Revision,
     Run,
+    Study,
     new_id,
 )
 from ..workflows import Workflow, get_workflow
@@ -128,6 +130,13 @@ class RunServices(ServiceBase):
         return _Checked(project, revision, target, workflow, parameters, resources, findings,
                         request_hash)
 
+    @staticmethod
+    def _run_findings(checked: _Checked) -> list[str]:
+        if checked.workflow.job_class == JobClass.EVALUATOR_POOL:
+            return [f"{checked.workflow.name}@{checked.workflow.version} evaluates study "
+                    "candidates; create a study to use it"]
+        return []
+
     def _spec(self, job_id, run_id, project, revision, target, workflow, parameters, resources,
               req: RunRequest, actor: Actor) -> JobSpec:
         threads = int(parameters.get("threads", 1))
@@ -157,19 +166,30 @@ class RunServices(ServiceBase):
             ),
         )
 
-    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked) -> list[str]:
+    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked,
+                        slots: int = 1) -> list[str]:
+        """Why a submission needing ``slots`` concurrent attempts is outside the budget."""
         budget = Budget.model_validate(session.budget)
         reasons: list[str] = []
         if budget.max_runs is not None and session.runs_submitted >= budget.max_runs:
             reasons.append(f"the agent session has used its {budget.max_runs} runs")
         if budget.max_concurrent_attempts is not None:
+            # Active run jobs, plus every live study's whole pool, which can start at any time.
             active = s.scalar(
                 select(func.count()).select_from(Job).join(Run, Run.id == Job.run_id)
-                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES))
+                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES),
+                       Job.study_id.is_(None))
             ) or 0
-            if active >= budget.max_concurrent_attempts:
-                reasons.append(f"{active} jobs are already active; the session allows "
-                               f"{budget.max_concurrent_attempts}")
+            pools = s.scalar(
+                select(func.coalesce(func.sum(Study.pool_size), 0))
+                .where(Study.agent_session_id == session.id,
+                       Study.state.in_(["PENDING_APPROVAL", "OPEN", "CLOSED"]))
+            ) or 0
+            if active + pools + slots > budget.max_concurrent_attempts:
+                reasons.append(
+                    f"{active} jobs are active and {pools} pool tasks are reserved; with "
+                    f"{slots} more the session would exceed its "
+                    f"{budget.max_concurrent_attempts} concurrent attempts")
         if budget.allowed_targets is not None and checked.target.id not in budget.allowed_targets:
             reasons.append(f"target {checked.target.id} is outside the session's allowed targets")
         if (budget.allowed_job_classes is not None
@@ -195,6 +215,7 @@ class RunServices(ServiceBase):
     def estimate(self, principal: Principal, req: RunRequest) -> Estimate:
         with self.tx() as s:
             checked = self._check(s, principal, req, "viewer")
+            checked.findings.extend(self._run_findings(checked))
             reasons: list[str] = []
             if principal.agent_session_id:
                 reasons = self._budget_reasons(s, self._agent_session(
@@ -248,6 +269,7 @@ class RunServices(ServiceBase):
             existing = self._existing(s, org_id, key, checked.request_hash)
             if existing is not None:
                 return existing
+            checked.findings.extend(self._run_findings(checked))
             if checked.findings:
                 raise PlatformError(
                     ErrorCode.CAPABILITY_UNSUPPORTED if checked.target.capabilities
@@ -340,10 +362,18 @@ class RunServices(ServiceBase):
             if approval.expires_at <= self.now():
                 raise PlatformError(ErrorCode.INVALID_TRANSITION,
                                     f"approval {approval.id} expired")
-            job = s.get(Job, approval.job_id, with_for_update=True)
             approval.state = "APPROVED" if approve else "REJECTED"
             approval.resolved_by, approval.resolved_at, approval.note = (
                 principal.user_id, self.now(), note)
+            if approval.study_id is not None:
+                study_state = self.resolve_study_approval(  # type: ignore[attr-defined]
+                    s, approval, approve, note)
+                self.audit(s, approval.organization_id, human_actor(principal),
+                           "approval." + approval.state.lower(), "approval", approval.id,
+                           {"study_id": approval.study_id, "note": note})
+                return {"approval_id": approval.id, "state": approval.state,
+                        "study_state": study_state}
+            job = s.get(Job, approval.job_id, with_for_update=True)
             if job.state == JobState.PENDING_APPROVAL.value:
                 if approve:
                     self._set_state(job, JobState.ACCEPTED)
@@ -362,7 +392,8 @@ class RunServices(ServiceBase):
             rows = s.scalars(select(Approval).where(
                 Approval.project_id == project_id, Approval.state == "PENDING"))
             return [{"approval_id": a.id, "run_id": a.run_id, "job_id": a.job_id,
-                     "reasons": a.reasons, "expires_at": a.expires_at.isoformat()} for a in rows]
+                     "study_id": a.study_id, "reasons": a.reasons,
+                     "expires_at": a.expires_at.isoformat()} for a in rows]
 
     # -- cancellation -----------------------------------------------------------------
 
@@ -422,6 +453,11 @@ class RunServices(ServiceBase):
     def get_results(self, principal: Principal, run_id: str) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            study = s.scalar(select(Study.id).where(Study.run_id == run.id))
+            if study is not None:
+                raise PlatformError(ErrorCode.NOT_READY,
+                                    f"run {run.id} is the evaluator pool of study {study}",
+                                    next_action=f"Read the results of study {study}")
             if run.canonical_attempt_id is None:
                 job = s.scalar(select(Job).where(Job.run_id == run.id))
                 raise PlatformError(ErrorCode.NOT_READY,

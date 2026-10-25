@@ -18,6 +18,7 @@ import httpx
 
 from .contracts.errors import ErrorBody, ErrorCode, PlatformError
 from .contracts.requests import RunRequest
+from .contracts.studies import StudyCreate
 
 
 class PlatformClient:
@@ -185,9 +186,65 @@ class PlatformClient:
             out[path] = target
         return out
 
+    # -- studies -------------------------------------------------------------------
 
-def _dump(request: RunRequest | dict) -> dict:
-    return request.model_dump(mode="json") if isinstance(request, RunRequest) else request
+    def create_study(self, request: StudyCreate | dict,
+                     idempotency_key: str | None = None) -> dict:
+        """Register a study. Retrying with the same key returns the same study."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", "/v1/studies", json=_dump(request),
+                          headers={"Idempotency-Key": key})
+
+    def study(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}")
+
+    def submit_batch(self, study_id: str, candidates: list[list[float]],
+                     idempotency_key: str | None = None) -> dict:
+        """Queue candidates for evaluation. Retrying with the same key never queues twice."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", f"/v1/studies/{study_id}/batches",
+                          json={"candidates": candidates}, headers={"Idempotency-Key": key})
+
+    def batch(self, study_id: str, batch_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/batches/{batch_id}")
+
+    def wait_for_batch(self, study_id: str, batch_id: str, timeout: float = 3600.0,
+                       interval: float = 0.25, should_stop=None) -> dict:
+        """Wait until a batch is evaluated, or has ended because its study did."""
+        deadline = time.monotonic() + timeout
+        while True:
+            view = self.batch(study_id, batch_id)
+            if view["state"] != "QUEUED":
+                return view
+            if should_stop is not None and should_stop():
+                return view
+            if time.monotonic() > deadline:
+                raise PlatformError(ErrorCode.NOT_READY,
+                                    f"batch {batch_id} was not evaluated within {timeout:g} s",
+                                    retryable=True, next_action="Query the batch again later.")
+            time.sleep(interval)
+
+    def close_study(self, study_id: str) -> dict:
+        return self._call("POST", f"/v1/studies/{study_id}/close")
+
+    def cancel_study(self, study_id: str) -> dict:
+        return self._call("POST", f"/v1/studies/{study_id}/cancel")
+
+    def study_results(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/results")
+
+    def study_evaluations(self, study_id: str, after: int = 0, limit: int = 500) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/evaluations",
+                          params={"after": after, "limit": limit})
+
+    def study_manifest(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/manifest")
+
+
+def _dump(request: RunRequest | StudyCreate | dict) -> dict:
+    if isinstance(request, (RunRequest, StudyCreate)):
+        return request.model_dump(mode="json")
+    return request
 
 
 def _error(response: httpx.Response) -> PlatformError:

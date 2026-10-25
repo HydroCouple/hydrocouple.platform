@@ -19,6 +19,8 @@ class Budget(_Model):
     """A delegated budget for one AI agent session. ``None`` means no limit."""
 
     max_runs: int | None = Field(default=None, ge=0)
+    # Study evaluations across the session; each study reserves its own budget.
+    max_evaluations: int | None = Field(default=None, ge=0)
     max_concurrent_attempts: int | None = Field(default=None, ge=0)
     max_estimated_spend: float | None = Field(default=None, ge=0)
     allowed_targets: list[str] | None = None

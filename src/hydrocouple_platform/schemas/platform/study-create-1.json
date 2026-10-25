@@ -1,0 +1,195 @@
+{
+  "$defs": {
+    "Dimension": {
+      "additionalProperties": false,
+      "description": "One component of the decision vector.",
+      "properties": {
+        "high": {
+          "title": "High",
+          "type": "number"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "low": {
+          "title": "Low",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "low",
+        "high"
+      ],
+      "title": "Dimension",
+      "type": "object"
+    },
+    "FailurePolicy": {
+      "description": "What a failed candidate does, as in ``openswmm_gymnasium.optimize``.\n\n``fail`` ends the study; ``penalty`` records the candidate with every\nobjective set to the study's ``failure_penalty`` and continues.",
+      "enum": [
+        "fail",
+        "penalty"
+      ],
+      "title": "FailurePolicy",
+      "type": "string"
+    },
+    "Objective": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "minimize",
+            "maximize"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "direction"
+      ],
+      "title": "Objective",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/study-create-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "dimensions": {
+      "items": {
+        "$ref": "#/$defs/Dimension"
+      },
+      "maxItems": 10000,
+      "minItems": 1,
+      "title": "Dimensions",
+      "type": "array"
+    },
+    "failure_penalty": {
+      "default": 1000000000000.0,
+      "title": "Failure Penalty",
+      "type": "number"
+    },
+    "max_evaluations": {
+      "maximum": 1000000,
+      "minimum": 1,
+      "title": "Max Evaluations",
+      "type": "integer"
+    },
+    "objectives": {
+      "items": {
+        "$ref": "#/$defs/Objective"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Objectives",
+      "type": "array"
+    },
+    "on_failure": {
+      "$ref": "#/$defs/FailurePolicy",
+      "default": "fail"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "pool_size": {
+      "default": 1,
+      "maximum": 256,
+      "minimum": 1,
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Seed"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "tool_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Call Id"
+    },
+    "workflow": {
+      "default": "gym.evaluate",
+      "title": "Workflow",
+      "type": "string"
+    },
+    "workflow_version": {
+      "default": "1",
+      "title": "Workflow Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_id",
+    "revision_id",
+    "target_id",
+    "dimensions",
+    "objectives",
+    "max_evaluations"
+  ],
+  "title": "StudyCreate",
+  "type": "object"
+}

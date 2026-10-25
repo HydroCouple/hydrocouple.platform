@@ -65,6 +65,12 @@ class DirectAgentClient:
     def result(self, token: str, res: AttemptResult):
         return self.services.agent_complete(self.target_id, token, res)
 
+    def lease_evaluations(self, token: str, req):
+        return self.services.evaluation_lease(self.target_id, token, req)
+
+    def complete_evaluations(self, token: str, body):
+        return self.services.evaluation_complete(self.target_id, token, body)
+
 
 @dataclass
 class World:

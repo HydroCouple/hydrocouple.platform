@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "BatchState": {
+      "enum": [
+        "QUEUED",
+        "DONE",
+        "CANCELLED",
+        "FAILED"
+      ],
+      "title": "BatchState",
+      "type": "string"
+    },
+    "EvaluationRecord": {
+      "additionalProperties": false,
+      "description": "One candidate's outcome as the study reports it.\n\n``costs`` are minimized (a ``maximize`` objective is negated by the\nevaluator), in the order of the study's objectives. A failed candidate under\nthe ``penalty`` policy carries the penalty costs and ``failed=True``; under\n``fail`` it carries no costs.",
+      "properties": {
+        "costs": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Costs"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "evaluation": {
+          "description": "1-based position in the study, in submission order",
+          "minimum": 1,
+          "title": "Evaluation",
+          "type": "integer"
+        },
+        "failed": {
+          "default": false,
+          "title": "Failed",
+          "type": "boolean"
+        },
+        "steps": {
+          "default": 0,
+          "title": "Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evaluation",
+        "costs"
+      ],
+      "title": "EvaluationRecord",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/batch-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "batch_id": {
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "completed": {
+      "title": "Completed",
+      "type": "integer"
+    },
+    "first_evaluation": {
+      "description": "the evaluation number of its first candidate",
+      "minimum": 1,
+      "title": "First Evaluation",
+      "type": "integer"
+    },
+    "next_action": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Action"
+    },
+    "results": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/EvaluationRecord"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Results"
+    },
+    "sequence": {
+      "title": "Sequence",
+      "type": "integer"
+    },
+    "size": {
+      "title": "Size",
+      "type": "integer"
+    },
+    "state": {
+      "$ref": "#/$defs/BatchState"
+    },
+    "study_id": {
+      "title": "Study Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "batch_id",
+    "study_id",
+    "sequence",
+    "first_evaluation",
+    "state",
+    "size",
+    "completed"
+  ],
+  "title": "BatchView",
+  "type": "object"
+}

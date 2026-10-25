@@ -41,6 +41,16 @@ from ..contracts.requests import (
     RunRequest,
     TargetCreate,
 )
+from ..contracts.studies import (
+    BatchSubmit,
+    BatchView,
+    CompletionAck,
+    EvaluationCompletion,
+    EvaluationLeaseRequest,
+    EvaluationLeaseResponse,
+    StudyCreate,
+    StudyView,
+)
 from ..db import make_engine, make_sessionmaker
 from ..db.models import ComputeTarget
 from ..services import PlatformServices, Principal, UserTokenVerifier
@@ -249,6 +259,53 @@ def create_app(
     def resolve_approval(approval_id: str, body: ApprovalBody, p: User) -> dict:
         return svc.resolve_approval(p, approval_id, body.approve, body.note)
 
+    # -- studies ------------------------------------------------------------------------
+
+    def _key(value: str | None) -> str:
+        if not value:
+            raise PlatformError(ErrorCode.VALIDATION_ERROR, "an Idempotency-Key header is required",
+                                next_action="Send a unique key and reuse it when retrying.")
+        return value
+
+    IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key")]
+
+    @app.post("/v1/studies", status_code=201)
+    def create_study(body: StudyCreate, p: User, key: IdempotencyKey = None) -> StudyView:
+        return svc.create_study(p, body, _key(key))
+
+    @app.get("/v1/studies/{study_id}")
+    def get_study(study_id: str, p: User) -> StudyView:
+        return svc.get_study(p, study_id)
+
+    @app.post("/v1/studies/{study_id}/batches", status_code=202)
+    def submit_batch(study_id: str, body: BatchSubmit, p: User,
+                     key: IdempotencyKey = None) -> BatchView:
+        return svc.submit_batch(p, study_id, body, _key(key))
+
+    @app.get("/v1/studies/{study_id}/batches/{batch_id}")
+    def get_batch(study_id: str, batch_id: str, p: User) -> BatchView:
+        return svc.get_batch(p, study_id, batch_id)
+
+    @app.post("/v1/studies/{study_id}/close")
+    def close_study(study_id: str, p: User) -> StudyView:
+        return svc.close_study(p, study_id)
+
+    @app.post("/v1/studies/{study_id}/cancel", status_code=202)
+    def cancel_study(study_id: str, p: User) -> StudyView:
+        return svc.cancel_study(p, study_id)
+
+    @app.get("/v1/studies/{study_id}/results")
+    def study_results(study_id: str, p: User) -> dict:
+        return svc.study_results(p, study_id)
+
+    @app.get("/v1/studies/{study_id}/evaluations")
+    def study_evaluations(study_id: str, p: User, after: int = 0, limit: int = 500) -> dict:
+        return svc.list_evaluations(p, study_id, after, limit)
+
+    @app.get("/v1/studies/{study_id}/manifest")
+    def study_manifest(study_id: str, p: User) -> dict:
+        return svc.study_manifest(p, study_id)
+
     # -- agent routes -------------------------------------------------------------------
 
     AttemptToken = Annotated[str | None, Header(alias="X-HC-Attempt-Token")]
@@ -281,5 +338,22 @@ def create_app(
     def agent_result(body: AttemptResult, t: DrainingAgent,
                      token: AttemptToken = None) -> ResultAck:
         return svc.agent_complete(t.id, _attempt_token(token), body)
+
+    @app.post("/v1/agent/evaluations/lease")
+    async def evaluation_lease(body: EvaluationLeaseRequest, t: Agent,
+                               token: AttemptToken = None) -> EvaluationLeaseResponse:
+        # More evaluations are new work, so a revoked target gets none.
+        attempt_token = _attempt_token(token)
+        deadline = time.monotonic() + body.wait_seconds
+        while True:
+            response = await run_in_threadpool(svc.evaluation_lease, t.id, attempt_token, body)
+            if response.chunk or response.done or time.monotonic() >= deadline:
+                return response
+            await asyncio.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
+
+    @app.post("/v1/agent/evaluations/complete")
+    def evaluation_complete(body: EvaluationCompletion, t: DrainingAgent,
+                            token: AttemptToken = None) -> CompletionAck:
+        return svc.evaluation_complete(t.id, _attempt_token(token), body)
 
     return app
