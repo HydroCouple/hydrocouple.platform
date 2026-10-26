@@ -45,6 +45,8 @@ server = [
 # Execution agent: runs in the customer's account or site.
 agent = [
     "pydantic-settings>=2.2",
+    # The Kubernetes adapter.
+    "kubernetes>=31",
 ]
 # Runner: executes approved workflows next to the engine.
 runner = [
@@ -76,6 +78,7 @@ testpaths = ["tests"]
 markers = [
     "postgres: needs a real PostgreSQL server (HCP_TEST_DATABASE_URL or HCP_TEST_PG_BIN)",
     "engine: runs the real openswmm Solver",
+    "k8s: needs a Kubernetes cluster (HCP_TEST_KUBECONFIG)",
 ]
 
 [tool.ruff]

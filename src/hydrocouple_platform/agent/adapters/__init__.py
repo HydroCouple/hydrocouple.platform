@@ -1,7 +1,7 @@
 """Scheduler adapters: one contract for every scheduler the agent can drive.
 
 ``capabilities / validate / submit / inspect / cancel / cleanup``. The local
-pool is implemented here; Kubernetes (M4) and the managed Batch, serverless
+pool and Kubernetes (M4) are implemented; the managed Batch, serverless
 container job and SLURM adapters (M5) implement the same protocol.
 """
 
@@ -12,7 +12,7 @@ from typing import Protocol
 
 from ...contracts.agent import Event, LeaseGrant
 from ...contracts.capabilities import AdapterCapabilities, check_spec
-from ...contracts.jobs import JobSpec
+from ...contracts.jobs import FailureClass, JobSpec
 from ...contracts.states import AttemptState
 
 
@@ -29,9 +29,15 @@ class Observation:
     provider_reference: str | None = None
     events: list[Event] = field(default_factory=list)
     stderr_tail: str | None = None
+    # A failure the scheduler itself evidences (out of memory, evicted, record lost),
+    # which the exit code alone cannot tell.
+    failure_class: FailureClass | None = None
 
 
 class SchedulerAdapter(Protocol):
+    """The adapter contract. An adapter whose work outlives the agent (Kubernetes) also has
+    ``adopt() -> [(lease, handle, secrets)]``, which the agent calls once when it starts."""
+
     name: str
 
     def capabilities(self) -> AdapterCapabilities: ...

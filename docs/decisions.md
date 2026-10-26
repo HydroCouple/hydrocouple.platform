@@ -16,7 +16,24 @@ These records implement the cloud execution plan revised on October 15, 2026 (sc
 
 **Decision.** Scheduler adapters live inside the agent and implement `capabilities / validate / submit / inspect / cancel / cleanup`. Every adapter reports the same capability record (`contracts/capabilities.py`), and a job is checked against it before a lease is offered. An unknown capability rejects any request that depends on it. Provider retries must report zero, so the platform's retry budget is the only one.
 
-**Status.** The local-pool adapter is implemented. Kubernetes is next (M4). The managed Batch, serverless container job and SLURM adapters follow by demand (M5).
+**Status.** The local-pool and Kubernetes adapters are implemented (M4). The managed Batch, serverless container job and SLURM adapters follow by demand (M5).
+
+**Kubernetes.** Each attempt is one `batch/v1` Job:
+- `backoffLimit: 0`, and a pod failure policy that fails the Job on an eviction or preemption, which is reported as an interruption.
+- The attempt's execution timeout is the Job's `activeDeadlineSeconds`.
+- A Kueue LocalQueue label when the target names one, so Kueue decides when the Job starts.
+
+Each evaluator pool task is its own single-pod Job, because each task has its own attempt identity; Indexed Jobs would put several tasks under one.
+
+The spec, and an evaluator's gateway token, reach the runner in a per-attempt Secret owned by the Job. The Secret also keeps the lease, so an agent that restarts adopts the Jobs still running, and the next poll says which of them to stop.
+
+Events come from the pod log. The outcome comes from the Job and pod status:
+- an OOM kill is the out-of-memory class;
+- an eviction is an interruption;
+- an image that cannot be pulled within the start grace is a missing dependency;
+- a Job deleted behind the agent's back is lost.
+
+Runner pods run under the `restricted` Pod Security Standard, with no service-account token. The adapter polls with one list of Jobs and pods per interval, rather than a watch.
 
 ## 3. Job classes
 

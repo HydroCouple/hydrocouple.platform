@@ -153,3 +153,37 @@ def test_a_revoked_target_drains_its_work_and_stops(world):
     stop = threading.Event()
     agent.run_forever(stop, wait_seconds=0)  # returns once the held attempt has published
     assert world.services.get_job(world.admin, job).state == "SUCCEEDED"
+
+
+class AdoptingAdapter(ScriptedAdapter):
+    """A scheduler whose work outlives the agent (Kubernetes), so a new agent adopts it."""
+
+    def adopt(self):
+        return [(lease, handle, {}) for handle, lease in self.leases.items()]
+
+
+def test_a_restarted_agent_adopts_running_attempts_and_publishes_them(world):
+    job = submit(world)
+    adapter = AdoptingAdapter(world)
+    agent_for(world, adapter).run_once()  # leased, started and heartbeating
+    (attempt_id, lease), = adapter.leases.items()
+    # The agent restarts: a new instance, nothing in memory, the same scheduler.
+    restarted = Agent(DirectAgentClient(world.services, world.target_id), adapter, world.store,
+                      world.store_uri, EgressPolicy.SUMMARIES, instance="agent-2")
+    fake_outputs(world, lease)
+    adapter.finish(attempt_id, exit_code=0)
+    restarted.run_once()
+    assert world.services.get_job(world.admin, job).state == "SUCCEEDED"
+    assert restarted.held == {}
+
+
+def test_a_restarted_agent_stops_adopted_attempts_that_were_cancelled_meanwhile(world):
+    job = submit(world)
+    adapter = AdoptingAdapter(world)
+    agent_for(world, adapter).run_once()
+    (attempt_id, _), = adapter.leases.items()
+    world.services.cancel_job(world.admin, job)  # while no agent is running
+    restarted = Agent(DirectAgentClient(world.services, world.target_id), adapter, world.store,
+                      world.store_uri, EgressPolicy.SUMMARIES, instance="agent-2")
+    restarted.run_once()
+    assert attempt_id in adapter.cancelled

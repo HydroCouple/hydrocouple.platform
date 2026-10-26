@@ -222,3 +222,25 @@ def test_the_pareto_set_matches_assemble_result_with_near_duplicates(gymnasium):
     got = [i + 1 for i in pareto_indices(list(enumerate(points)))]
     assert got == expected
     assert len(points) - 1 in got and len(points) in got
+
+
+# -- an agent that restarts keeps its evaluators' gateway tokens ---------------------------
+
+
+def test_an_adopted_evaluator_keeps_its_gateway_token():
+    from hydrocouple_platform.agent import Agent
+    from hydrocouple_platform.contracts.jobs import EgressPolicy
+
+    lease = SimpleNamespace(attempt_id="att_1", attempt_token="tok")
+
+    class Adopting:
+        def adopt(self):
+            return [(lease, "hc-att-1", {"HCP_RUNNER_TOKEN": "hcpr_kept"})]
+
+    agent = Agent(None, Adopting(), None, "file:///store", EgressPolicy.SUMMARIES)
+    try:
+        agent._adopt()
+        assert agent.held["att_1"].handle == "hc-att-1"
+        assert agent.gateway._tokens == {"hcpr_kept": "att_1"}
+    finally:
+        agent.close()

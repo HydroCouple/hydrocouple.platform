@@ -38,7 +38,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         secrets = _secrets()
-    except ValueError as exc:
+    except (ValueError, OSError) as exc:
         events.emit("lifecycle", "failed", f"the secrets on stdin are invalid: {exc}")
         return EXIT_INVALID_INPUT
     pin_threads(spec.runtime.threads)
@@ -75,10 +75,15 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _secrets() -> dict[str, str]:
-    """A JSON object of strings on stdin, when the agent says it sent one."""
-    if os.environ.get("HCP_RUNNER_SECRETS_STDIN") != "1":
+    """A JSON object of strings from the agent: on stdin (the local pool) or in a mounted
+    file (container adapters), never in the environment."""
+    path = os.environ.get("HCP_RUNNER_SECRETS_FILE")
+    if path:
+        data = json.loads(Path(path).read_text(encoding="utf-8") or "{}")
+    elif os.environ.get("HCP_RUNNER_SECRETS_STDIN") == "1":
+        data = json.loads(sys.stdin.read() or "{}")
+    else:
         return {}
-    data = json.loads(sys.stdin.read() or "{}")
     if not isinstance(data, dict) or not all(
             isinstance(k, str) and isinstance(v, str) for k, v in data.items()):
         raise ValueError("expected an object of strings")

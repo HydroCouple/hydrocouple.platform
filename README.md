@@ -16,7 +16,8 @@ The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decis
 | M2 Durable core | PostgreSQL schema and migration, shared services, HTTP API, client SDK, outbox, dispatcher, reconciler, agent with the local-pool adapter, agent sessions with budgets and approvals |
 | M3 Packaging and runners | `.inp` dependency packaging as a one-component composition, the `swmm.simulation@1` runner on the real engine, run and attempt manifests |
 | M3b Studies and evaluator pools | Ask/tell studies with fenced chunk leases, evaluator pool tasks (`gym.evaluate@1`) leasing through the agent's runner gateway, failed-candidate policies, lineage and the Pareto set; `hydrocouple_platform.gym.run_platform_study` drives `openswmm_gymnasium` optimizers on the platform |
-| Next | MCP platform toolset (after the current `openswmm.mcp` work lands), Kubernetes adapter (M4) |
+| M4 Kubernetes and the first BYOC slice | In progress: the Kubernetes adapter is done; the signed runner image, object storage, install modules, deletion and the gate follow |
+| Next | MCP platform toolset (after the current `openswmm.mcp` work lands) |
 
 ## Layout
 

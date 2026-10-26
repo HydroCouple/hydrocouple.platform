@@ -61,8 +61,9 @@ class RunnerGateway:
         host, port = self._server.server_address[:2]
         return f"http://{host}:{port}"
 
-    def register(self, attempt_id: str) -> str:
-        token = "hcpr_" + secrets.token_urlsafe(32)
+    def register(self, attempt_id: str, token: str | None = None) -> str:
+        """A new token for an attempt, or the one it already holds (an adopted attempt)."""
+        token = token or "hcpr_" + secrets.token_urlsafe(32)
         with self._lock:
             self._tokens[token] = attempt_id
         return token

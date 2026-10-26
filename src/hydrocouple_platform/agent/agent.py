@@ -132,14 +132,19 @@ class _Held:
 class Agent:
     def __init__(self, client: AgentClient, adapter: SchedulerAdapter, store: StorageBackend,
                  store_uri: str, egress: EgressPolicy, instance: str | None = None,
-                 gateway_host: str = "127.0.0.1"):
+                 gateway_host: str = "127.0.0.1", gateway_port: int = 0,
+                 gateway_url: str | None = None):
         self.client, self.adapter, self.store = client, adapter, store
         self.store_uri, self.egress = store_uri, egress
         self.instance = instance or f"{socket.gethostname()}-{os.getpid()}"
         self.held: dict[str, _Held] = {}
         # Started with the first evaluator task; runners reach the control plane only here.
         self.gateway: RunnerGateway | None = None
-        self.gateway_host = gateway_host
+        # Where the gateway listens, and the address runners use (a Service on Kubernetes).
+        self.gateway_host, self.gateway_port, self.gateway_url = (
+            gateway_host, gateway_port, gateway_url)
+        # Adapters whose work outlives the agent (Kubernetes) are asked for it at start.
+        self._adopted = not hasattr(adapter, "adopt")
         self.heartbeat_interval = 15.0
         # Set when the target is revoked: report on held attempts, claim nothing new.
         self.draining = False
@@ -153,6 +158,8 @@ class Agent:
         the others.
         """
         response = None
+        if not self._adopted:
+            self._adopt()
         if not self.draining:
             try:
                 response = self.client.poll(PollRequest(
@@ -222,6 +229,26 @@ class Agent:
                         {"message": f"the scheduler could not start it: {exc}"}, self.egress)))
             return
         self.held[lease.attempt_id] = _Held(lease=lease, handle=handle, token=lease.attempt_token)
+
+    def _adopt(self) -> None:
+        """Hold again the attempts an earlier instance of this agent left running. The poll
+        then says which of them to stop; an expired attempt token is still accepted while
+        its attempt holds the job."""
+        try:
+            adopted = self.adapter.adopt()  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("could not list the attempts left running; will try again")
+            return
+        self._adopted = True
+        for lease, handle, secrets in adopted:
+            if lease.attempt_id in self.held:
+                continue
+            token = (secrets or {}).get("HCP_RUNNER_TOKEN")
+            if token:
+                self._gateway().register(lease.attempt_id, token)
+            self.held[lease.attempt_id] = _Held(lease=lease, handle=handle,
+                                                token=lease.attempt_token)
+            log.info("adopted attempt %s", lease.attempt_id)
 
     def _report(self) -> None:
         for attempt_id in list(self.held):
@@ -323,10 +350,14 @@ class Agent:
         """The gateway address (environment) and token (secret) for an evaluator task."""
         if lease.spec.resources.job_class != JobClass.EVALUATOR_POOL:
             return None
+        gateway = self._gateway()
+        return ({"HCP_GATEWAY_URL": self.gateway_url or gateway.url},
+                {"HCP_RUNNER_TOKEN": gateway.register(lease.attempt_id)})
+
+    def _gateway(self) -> RunnerGateway:
         if self.gateway is None:
-            self.gateway = RunnerGateway(self, host=self.gateway_host)
-        return ({"HCP_GATEWAY_URL": self.gateway.url},
-                {"HCP_RUNNER_TOKEN": self.gateway.register(lease.attempt_id)})
+            self.gateway = RunnerGateway(self, host=self.gateway_host, port=self.gateway_port)
+        return self.gateway
 
     def _held_task(self, attempt_id: str) -> _Held:
         held = self.held.get(attempt_id)
@@ -384,6 +415,12 @@ class Agent:
             # Stopped by a signal this agent did not send: an interruption, not a cancel.
             return AttemptResult(**base, outcome=AttemptOutcome.FAILED, exit_code=obs.exit_code,
                                  failure_class=FailureClass.INTERRUPTED)
+        if obs.failure_class is not None:
+            message = held.failure_message or (obs.stderr_tail or "").strip()[-500:] or None
+            return AttemptResult(**base, outcome=AttemptOutcome.FAILED, exit_code=obs.exit_code,
+                                 failure_class=obs.failure_class, diagnostics=filter_diagnostics(
+                                     {"exit_code": obs.exit_code, "message": message},
+                                     self.egress))
         if obs.exit_code == 0:
             manifest, digest, problems = self._verify_outputs(held)
             if not problems:

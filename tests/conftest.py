@@ -178,3 +178,44 @@ def server(settings, services):
     yield f"http://127.0.0.1:{port}"
     srv.should_exit = True
     thread.join(timeout=10)
+
+
+# -- Kubernetes (tests/k8s) ------------------------------------------------------------------
+#
+# Set HCP_TEST_KUBECONFIG to a cluster's kubeconfig. The adapter contract tests also need
+# HCP_TEST_K8S_CONTRACT_IMAGE: the stand-in runner built from tests/k8s/contract-runner, by
+# digest, in a registry the cluster can pull from. Each test module gets its own namespace,
+# labelled for the "restricted" Pod Security Standard, and deletes it afterwards.
+
+
+@pytest.fixture(scope="module")
+def kube():
+    path = os.environ.get("HCP_TEST_KUBECONFIG")
+    if not path:
+        pytest.skip("set HCP_TEST_KUBECONFIG to run tests against a Kubernetes cluster")
+    from hydrocouple_platform.agent.adapters.kubernetes import load_api_client
+
+    return load_api_client(path)
+
+
+@pytest.fixture(scope="module")
+def namespace(kube):
+    from kubernetes import client as k8s
+
+    core = k8s.CoreV1Api(kube)
+    name = "hct-" + uuid.uuid4().hex[:8]
+    core.create_namespace({"metadata": {"name": name, "labels": {
+        "pod-security.kubernetes.io/enforce": "restricted",
+        "pod-security.kubernetes.io/enforce-version": "latest"}}})
+    core.create_namespaced_service_account(name, {"metadata": {"name": "hcp-runner"},
+                                                  "automountServiceAccountToken": False})
+    yield name
+    core.delete_namespace(name, propagation_policy="Background")
+
+
+@pytest.fixture(scope="module")
+def contract_image():
+    image = os.environ.get("HCP_TEST_K8S_CONTRACT_IMAGE")
+    if not image:
+        pytest.skip("set HCP_TEST_K8S_CONTRACT_IMAGE to the contract runner image digest")
+    return image
