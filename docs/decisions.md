@@ -37,7 +37,12 @@ Runner pods run under the `restricted` Pod Security Standard, with no service-ac
 
 **Install.** `deploy/kustomize` installs the agent in its own namespace. The agent's Role is namespaced, the only permissions it has, and a test keeps it equal to what the adapter checks. Agent and runners have separate ServiceAccounts, and so separate workload identities: the runners' can only read revisions and write runs.
 
-Network policies limit runner egress to DNS, the agent's gateway and the store's endpoint, and runners accept no connections.
+Network policies limit runner egress to DNS, the agent's gateway and the store's endpoint, and runners accept no connections. The store's endpoint includes where the runners' workload identity gets its token:
+- STS on EKS (IRSA), through an interface endpoint;
+- Microsoft Entra ID on AKS, by its service tag's prefixes;
+- the metadata server on GKE.
+
+Without it a runner can't authenticate to the store.
 
 How soon a pod's policy takes effect depends on the CNI. k3s's kube-router applies it a moment after the pod starts, and the install test measured it enforced within a second. Sites that need enforcement before a runner's first packet should use a CNI that programs policy when the pod is created (Calico, Cilium).
 
@@ -168,12 +173,14 @@ An image no pinned key signed fails the attempt as `untrusted_image`, which is n
 
 The runner reads the image from its spec, so the attempt manifest's provenance names the digest that ran.
 
-**Images.** `images/build-runner.sh` builds the runner image from a wheelhouse, on a base pinned by digest, then:
+**Images.** `images/build.sh` builds the runner and agent images from a wheelhouse, on a base pinned by digest, then:
 - pushes it;
 - writes an SPDX SBOM with syft;
 - signs the image with cosign and attaches the SBOM as a signed attestation.
 
 **Transparency log.** Signatures are checked against the pinned keys alone by default, because a private site may not reach a transparency log. `require_transparency_log` adds the check where the site can.
+
+**Registry credentials.** cosign reads signatures from the registry itself. In an agent pod it has no Docker configuration, so a private registry would refuse it and every image would be untrusted. With `k8s_keychain`, set in the EKS, AKS and GKE overlays, cosign uses the agent's workload identity for ECR, ACR and Artifact Registry. The agent's identity therefore needs read access to the registry, as the nodes do.
 
 **Rules out.**
 - Images by tag.
@@ -191,6 +198,8 @@ The runner reads the image from its spec, so the attempt manifest's provenance n
 An attempt the reconciler marked lost or timed out on the server's clock is not confirmed. If confirmation does not come within `deletion_writer_wait_seconds`, the deletion is `BLOCKED`. It says which attempt and when the agent last polled, and it continues when the agent confirms.
 
 **Erasure.** The target's agent deletes every object under the run's prefix, including old versions on S3, versioned Cloud Storage and versioned Blob Storage, and reports how many there were. A second pass after `deletion_recheck_seconds` removes anything written late. The deletion is `ERASED` only when a pass finds nothing left, and nothing is described as deleted before that.
+
+**Delivery.** Each poll that hands out an erasure marks it delivered, so a long poll returns as soon as one is due, as it does for leases and grant requests. Otherwise a poll that keeps waiting would mark erasures delivered and never return them.
 
 **What is kept.** Revisions are shared inputs and are kept, and the agent erases only `runs/<org>/<project>/<run>/` prefixes. The run's record stays as a tombstone, and its artifact records are removed.
 

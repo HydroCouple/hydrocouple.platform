@@ -71,6 +71,20 @@ def test_any_pinned_key_may_have_signed_the_image_and_verdicts_are_cached(artifa
     assert all("--insecure-ignore-tlog=true" in line for line in lines)
 
 
+def test_a_cloud_agent_reads_signatures_with_its_workload_identity(artifact_dir):
+    """Found preparing the cloud gate: without it cosign reads a private registry
+    anonymously, and every image is refused."""
+    key = artifact_dir / "release.pub"
+    key.write_text("release")
+    cosign, calls = fake_cosign(artifact_dir, accepts=str(key))
+    for k8s_keychain in (False, True):
+        ImageVerifier(ImageTrust(keys=[str(key)], cosign=str(cosign),
+                                 k8s_keychain=k8s_keychain)).resolve(
+            f"123456789012.dkr.ecr.us-east-1.amazonaws.com/hydrocouple/runner@{DIGEST}")
+    default, cloud = calls.read_text().splitlines()
+    assert "--k8s-keychain" not in default and "--k8s-keychain=true" in cloud
+
+
 def test_an_image_no_pinned_key_signed_is_untrusted(artifact_dir):
     key = artifact_dir / "release.pub"
     key.write_text("release")

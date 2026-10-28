@@ -334,7 +334,9 @@ def create_app(
         deadline = time.monotonic() + body.wait_seconds
         while True:
             response = await run_in_threadpool(svc.poll_once, t.id, body)
-            if response.leases or response.grant_requests or time.monotonic() >= deadline:
+            # Each is marked delivered when claimed, so it is returned at once.
+            if response.leases or response.grant_requests or response.erasures \
+                    or time.monotonic() >= deadline:
                 return response
             await asyncio.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
 

@@ -10,7 +10,9 @@ An image no pinned key has signed fails the attempt as ``untrusted_image``, whic
 never retried. A site that mirrors images copies their signatures with them
 (``cosign copy``). Signatures are checked against the keys alone by default, because
 a private site may not reach a transparency log. ``require_transparency_log`` adds
-the log check where it can.
+the log check where it can. ``k8s_keychain`` has cosign read a private registry (ECR,
+ACR, Artifact Registry) with the agent's workload identity; otherwise it uses only a
+Docker config, which an agent pod does not have.
 """
 
 from __future__ import annotations
@@ -36,6 +38,7 @@ class ImageTrust(BaseModel):
     mirror: str | None = Field(default=None, description="registry and path prefix to pull from")
     require_transparency_log: bool = False
     allow_http_registry: bool = False  # a plain-HTTP registry, for test clusters only
+    k8s_keychain: bool = False  # cosign --k8s-keychain: the cloud's registry credentials
     cosign: str = "cosign"
     timeout_seconds: float = Field(default=120, gt=0)
     cache_seconds: float = Field(default=3600, ge=0)
@@ -76,6 +79,8 @@ class ImageVerifier:
         flags = [] if self.trust.require_transparency_log else ["--insecure-ignore-tlog=true"]
         if self.trust.allow_http_registry:
             flags += ["--allow-http-registry", "--allow-insecure-registry"]
+        if self.trust.k8s_keychain:
+            flags.append("--k8s-keychain=true")
         problems = []
         for key in self.trust.keys:
             try:

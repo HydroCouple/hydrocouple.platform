@@ -242,3 +242,27 @@ def test_deletion_over_http(world, server, make_token):
         deletion = client.delete_run(accepted.run_id)
         assert deletion["state"] == "ERASING"
         assert client.deletion(deletion["deletion_id"])["run_id"] == accepted.run_id
+
+
+@pytest.mark.parametrize("route", ["in process", "http"])
+def test_a_long_poll_returns_a_due_erasure_at_once(world, server, route):
+    """Found by the M4 gate: a long poll marked the erasure delivered and kept waiting,
+    so the agent saw it only when it was redelivered a minute later."""
+    import time
+
+    from hydrocouple_platform.agent.agent import AgentClient
+    from hydrocouple_platform.contracts.agent import PollRequest
+    from world import local_capabilities
+
+    adapter = ScriptedAdapter(world)
+    accepted, _, _ = published_run(world, adapter, agent_for(world, adapter))
+    deletion = world.services.delete_run(world.admin, accepted.run_id)
+    request = PollRequest(agent_instance="agent-1", agent_version="test",
+                          capabilities=local_capabilities(), free_slots=0, wait_seconds=5)
+    started = time.monotonic()
+    if route == "http":
+        response = AgentClient(server, world.credential).poll(request)
+    else:
+        response = world.services.agent_poll(world.target_id, request)
+    assert [e.deletion_id for e in response.erasures] == [deletion.deletion_id]
+    assert time.monotonic() - started < 2

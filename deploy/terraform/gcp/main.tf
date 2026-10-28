@@ -70,9 +70,12 @@ resource "google_storage_bucket_iam_member" "agent" {
   bucket = local.bucket
   role   = "roles/storage.objectAdmin"
   member = "serviceAccount:${google_service_account.this["agent"].email}"
+  # Listing (for erasure) is checked on the bucket, and a condition can't see the listed
+  # prefix, so the agent may list the bucket's object names; it reads and writes only
+  # the prefix.
   condition {
     title      = "hydrocouple-prefix"
-    expression = "resource.name.startsWith(\"${local.objects}\")"
+    expression = "resource.name.startsWith(\"${local.objects}\") || resource.name == \"projects/_/buckets/${local.bucket}\""
   }
 }
 

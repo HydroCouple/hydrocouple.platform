@@ -3,6 +3,9 @@
 # ServiceAccount patches and create pod identity associations instead.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+# The agent's namespace, as in agent.json (kubernetes.namespace); generated objects
+# get it only from here.
+namespace: hydrocouple
 resources:
   - ../../base
 components:
@@ -29,7 +32,9 @@ patches:
         path: /metadata/annotations
         value:
           eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE:role/hydrocouple-runner
-  # The store's endpoint: the CIDRs of the S3 gateway endpoint's prefix list (aws ec2 describe-managed-prefix-lists).
+  # The store's endpoint and STS, where IRSA exchanges the runners' tokens: the CIDRs of
+  # the S3 gateway endpoint's prefix list, and the addresses of an STS interface endpoint
+  # (deploy/gate/eks.md shows how to find both).
   - target: {kind: NetworkPolicy, name: hcp-runner-storage}
     patch: |-
       - op: replace

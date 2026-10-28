@@ -45,4 +45,9 @@ Each overlay installs the agent for one kind of cluster. Copy the one that fits 
   - `199.36.153.8/30` (private.googleapis.com) for Private Google Access.
 
   On a CNI with DNS-aware policies (Cilium), an FQDN rule can replace it.
+- Runners also reach the endpoint where their workload identity gets its token:
+  - on EKS, an STS interface endpoint's addresses, in the same `hcp-runner-storage` list;
+  - on AKS, Microsoft Entra ID, in `entra-id.yaml`;
+  - on GKE, the metadata server, which the overlay already allows.
 - With Kueue (`components/kueue`), set the ClusterQueue's quota to what this target may use.
+- The agent's identity can read the registry, as the nodes can. The cloud overlays set `k8s_keychain`, so cosign reads image signatures with that identity. `deploy/gate/<cloud>.md` shows the grant for each cloud.

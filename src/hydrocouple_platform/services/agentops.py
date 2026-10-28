@@ -62,7 +62,8 @@ class AgentServices(ServiceBase):
     # -- poll ------------------------------------------------------------------------
 
     def agent_poll(self, target_id: str, req: PollRequest) -> PollResponse:
-        """Claim leases and grant requests; waits up to ``req.wait_seconds`` for either.
+        """Claim leases, grant requests and erasures; waits up to ``req.wait_seconds`` for
+        any of them. Each is marked delivered when claimed, so a poll returns at once.
 
         The HTTP API runs the wait asynchronously (``api/app.py``); this blocking
         form serves in-process callers.
@@ -70,7 +71,8 @@ class AgentServices(ServiceBase):
         deadline = time.monotonic() + req.wait_seconds
         while True:
             response = self.poll_once(target_id, req)
-            if response.leases or response.grant_requests or time.monotonic() >= deadline:
+            if response.leases or response.grant_requests or response.erasures \
+                    or time.monotonic() >= deadline:
                 return response
             time.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
 

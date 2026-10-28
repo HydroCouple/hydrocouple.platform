@@ -1,0 +1,12 @@
+# Runner egress to Microsoft Entra ID (login.microsoftonline.com), where workload identity
+# exchanges the runners' tokens: the IPv4 prefixes of the AzureActiveDirectory service tag.
+# deploy/gate/aks.md writes this file from `az network list-service-tags`. The prefixes
+# change from time to time, so refresh it the same way. On a CNI with DNS-aware
+# policies, an FQDN rule can replace it.
+- op: add
+  path: /spec/egress/-
+  value:
+    to:
+      - ipBlock: {cidr: REPLACE/32}
+    ports:
+      - {protocol: TCP, port: 443}

@@ -2,6 +2,9 @@
 # the runners their own service accounts (deploy/terraform/gcp prints both).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
+# The agent's namespace, as in agent.json (kubernetes.namespace); generated objects
+# get it only from here.
+namespace: hydrocouple
 resources:
   - ../../base
 components:
@@ -35,3 +38,17 @@ patches:
         path: /spec/egress/0/to
         value:
           - ipBlock: {cidr: 199.36.153.8/30}
+  # Workload Identity Federation for GKE: runners get their tokens from the GKE metadata
+  # server, on port 988, and on port 80 with Dataplane V2.
+  - target: {kind: NetworkPolicy, name: hcp-runner-storage}
+    patch: |-
+      - op: add
+        path: /spec/egress/-
+        value:
+          to: [{ipBlock: {cidr: 169.254.169.252/32}}]
+          ports: [{protocol: TCP, port: 988}]
+      - op: add
+        path: /spec/egress/-
+        value:
+          to: [{ipBlock: {cidr: 169.254.169.254/32}}]
+          ports: [{protocol: TCP, port: 80}]

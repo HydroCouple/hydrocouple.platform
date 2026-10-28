@@ -13,7 +13,7 @@ OpenTofu (or Terraform 1.6+) modules for the cloud side of a Kubernetes target. 
 - sign grants (presigned URLs are signed with the agent's own permissions);
 - delete runs.
 
-Azure scopes both identities to the container rather than the prefix. Add an ABAC condition on the role assignment to narrow the runners to `runs/` and `revisions/`.
+On Google Cloud the agent can also list the names of every object in the bucket, because erasure lists and an IAM condition can't limit a listing to a prefix. Azure scopes both identities to the container rather than the prefix. Add an ABAC condition on the role assignment to narrow the runners to `runs/` and `revisions/`.
 
 **What the modules leave to the site.** The cluster, its node pools, Kueue, the private endpoint for the store and the NetworkPolicy-capable CNI. Use the endpoint's CIDRs in `hcp-runner-storage`.
 

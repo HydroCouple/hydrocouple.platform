@@ -1,10 +1,11 @@
 # The runner image for container targets: the hydrocouple_platform runner with the
 # OpenSWMM engine, the openswmm_gymnasium evaluator and the S3, Azure Blob Storage and
 # Cloud Storage backends, installed from the wheelhouse
-# that images/build-runner.sh prepares. BASE must be pinned by digest and provide
+# that images/build.sh prepares. BASE must be pinned by digest and provide
 # Python 3.10 or later with venv, useradd, and the libraries the engine wheel links
 # (libgomp; libsqlite3 for an engine wheel not repaired with auditwheel). The official
-# python:3.10-slim-bookworm image, by digest, is one such base.
+# python:3.10-slim-bookworm image with libgomp1 added is one such base
+# (deploy/gate/README.md).
 ARG BASE
 FROM ${BASE}
 COPY wheelhouse/ /tmp/wheelhouse/
