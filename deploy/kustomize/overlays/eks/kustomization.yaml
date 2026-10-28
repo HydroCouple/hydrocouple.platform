@@ -1,0 +1,38 @@
+# Amazon EKS with S3. IRSA gives the agent and the runners their own IAM roles
+# (deploy/terraform/aws prints both ARNs). With EKS Pod Identity, delete the two
+# ServiceAccount patches and create pod identity associations instead.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+components:
+  - ../../components/kueue
+images:
+  - name: hydrocouple/agent
+    newName: REPLACE-registry/hydrocouple/agent
+    digest: sha256:REPLACE
+configMapGenerator:
+  - name: hcp-agent-config
+    files: [agent.json]
+  - name: hcp-image-keys
+    files: [release.pub]
+patches:
+  - target: {kind: ServiceAccount, name: hcp-agent}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE:role/hydrocouple-agent
+  - target: {kind: ServiceAccount, name: hcp-runner}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          eks.amazonaws.com/role-arn: arn:aws:iam::REPLACE:role/hydrocouple-runner
+  # The store's endpoint: the CIDRs of the S3 gateway endpoint's prefix list (aws ec2 describe-managed-prefix-lists).
+  - target: {kind: NetworkPolicy, name: hcp-runner-storage}
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to
+        value:
+          - ipBlock: {cidr: REPLACE/32}

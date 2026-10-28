@@ -1,0 +1,24 @@
+{
+  "control_plane": "https://REPLACE-platform.example.org",
+  "store": "gs://REPLACE-bucket/hydrocouple",
+  "egress": "summaries",
+  "adapter": "kubernetes",
+  "kubernetes": {
+    "namespace": "hydrocouple",
+    "queue_name": "hydrocouple",
+    "max_cpu": 16,
+    "max_memory_gib": 64,
+    "scratch_gib": 100,
+    "slots": 16
+  },
+  "image_trust": {
+    "keys": [
+      "/etc/hydrocouple/keys/release.pub"
+    ]
+  },
+  "gateway": {
+    "host": "0.0.0.0",
+    "port": 8081,
+    "url": "http://hcp-agent-gateway.hydrocouple.svc:8081"
+  }
+}

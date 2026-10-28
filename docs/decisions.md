@@ -35,6 +35,12 @@ Events come from the pod log. The outcome comes from the Job and pod status:
 
 Runner pods run under the `restricted` Pod Security Standard, with no service-account token. The adapter polls with one list of Jobs and pods per interval, rather than a watch.
 
+**Install.** `deploy/kustomize` installs the agent in its own namespace. The agent's Role is namespaced, the only permissions it has, and a test keeps it equal to what the adapter checks. Agent and runners have separate ServiceAccounts, and so separate workload identities: the runners' can only read revisions and write runs.
+
+Network policies limit runner egress to DNS, the agent's gateway and the store's endpoint, and runners accept no connections.
+
+How soon a pod's policy takes effect depends on the CNI. k3s's kube-router applies it a moment after the pod starts, and the install test measured it enforced within a second. Sites that need enforcement before a runner's first packet should use a CNI that programs policy when the pod is created (Calico, Cilium).
+
 ## 3. Job classes
 
 **Decision.** `single`, `evaluator-pool`, `multi-rank` and `analysis`. `single` and `evaluator-pool` run (the pool since M3b, §10). The spec and capability checks already carry ranks, so multi-rank jobs need no contract change.

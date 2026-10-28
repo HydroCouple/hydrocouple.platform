@@ -1,0 +1,33 @@
+# Any other cluster (k3s, RKE2, OpenShift) with an S3-compatible store such as MinIO.
+# The agent and the runners read the store's credentials from the Secret
+# hcp-store-credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY), which you create;
+# give the runners' key access to the runs/ and revisions/ prefixes only.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+components:
+  - ../../components/kueue
+images:
+  - name: hydrocouple/agent
+    newName: REPLACE-registry/hydrocouple/agent
+    digest: sha256:REPLACE
+configMapGenerator:
+  - name: hcp-agent-config
+    files: [agent.json]
+  - name: hcp-image-keys
+    files: [release.pub]
+patches:
+  # The store's endpoint: the store's address.
+  - target: {kind: NetworkPolicy, name: hcp-runner-storage}
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to
+        value:
+          - ipBlock: {cidr: REPLACE/32}
+  - target: {kind: Deployment, name: hcp-agent}
+    patch: |-
+      - op: add
+        path: /spec/template/spec/containers/0/envFrom
+        value:
+          - secretRef: {name: hcp-store-credentials}

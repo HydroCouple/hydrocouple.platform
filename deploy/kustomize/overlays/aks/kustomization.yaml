@@ -1,0 +1,42 @@
+# Azure AKS with Blob Storage. Microsoft Entra Workload ID gives the agent and the runners
+# their own user-assigned identities (deploy/terraform/azure prints both client IDs).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+components:
+  - ../../components/kueue
+images:
+  - name: hydrocouple/agent
+    newName: REPLACE-registry/hydrocouple/agent
+    digest: sha256:REPLACE
+configMapGenerator:
+  - name: hcp-agent-config
+    files: [agent.json]
+  - name: hcp-image-keys
+    files: [release.pub]
+patches:
+  - target: {kind: ServiceAccount, name: hcp-agent}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          azure.workload.identity/client-id: REPLACE-agent-client-id
+  - target: {kind: ServiceAccount, name: hcp-runner}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          azure.workload.identity/client-id: REPLACE-runner-client-id
+  # The store's endpoint: the address of the storage account's private endpoint.
+  - target: {kind: NetworkPolicy, name: hcp-runner-storage}
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to
+        value:
+          - ipBlock: {cidr: REPLACE/32}
+  - target: {kind: Deployment, name: hcp-agent}
+    patch: |-
+      - op: add
+        path: /spec/template/metadata/labels/azure.workload.identity~1use
+        value: "true"

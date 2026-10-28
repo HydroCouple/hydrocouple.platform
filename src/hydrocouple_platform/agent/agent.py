@@ -148,6 +148,8 @@ class Agent:
         # Container images run only when a pinned key signed them, unless this agent was
         # explicitly started without image trust (development clusters).
         self.images, self.allow_unsigned_images = images, allow_unsigned_images
+        if gateway_port:  # a fixed address behind a Service: listen from the start
+            self._gateway()
         # Adapters whose work outlives the agent (Kubernetes) are asked for it at start.
         self._adopted = not hasattr(adapter, "adopt")
         self.heartbeat_interval = 15.0

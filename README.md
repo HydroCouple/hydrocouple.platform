@@ -16,7 +16,7 @@ The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decis
 | M2 Durable core | PostgreSQL schema and migration, shared services, HTTP API, client SDK, outbox, dispatcher, reconciler, agent with the local-pool adapter, agent sessions with budgets and approvals |
 | M3 Packaging and runners | `.inp` dependency packaging as a one-component composition, the `swmm.simulation@1` runner on the real engine, run and attempt manifests |
 | M3b Studies and evaluator pools | Ask/tell studies with fenced chunk leases, evaluator pool tasks (`gym.evaluate@1`) leasing through the agent's runner gateway, failed-candidate policies, lineage and the Pareto set; `hydrocouple_platform.gym.run_platform_study` drives `openswmm_gymnasium` optimizers on the platform |
-| M4 Kubernetes and the first BYOC slice | In progress: the Kubernetes adapter, signed runner images and the S3, Blob Storage and Cloud Storage backends are done; install modules, deletion and the gate follow |
+| M4 Kubernetes and the first BYOC slice | In progress: the Kubernetes adapter, signed runner and agent images, the S3, Blob Storage and Cloud Storage backends, and the Kustomize install with OpenTofu modules for AWS, Azure and Google Cloud are done; deletion and the gate follow |
 | Next | MCP platform toolset (after the current `openswmm.mcp` work lands) |
 
 ## Layout
@@ -35,7 +35,8 @@ src/hydrocouple_platform/
   storage/     object storage: file://, s3://, azure://, gs://
   workflows.py the registry of approved workflows
   schemas/     published JSON Schemas (platform) and HydroCoupleSDK copies
-images/        the runner image and its build, SBOM and signing script
+images/        the runner and agent images, and their build, SBOM and signing script
+deploy/        Kustomize install for Kubernetes targets, OpenTofu modules per cloud
 tests/k8s/     tests against a Kubernetes cluster (HCP_TEST_KUBECONFIG)
 ```
 
@@ -63,6 +64,15 @@ hcp agent --control-plane http://localhost:8080 --store file:///data/hcp-store \
 ```
 
 The control plane refuses to start without a token verifier; there is no unauthenticated mode.
+
+### A Kubernetes target
+
+The agent runs in the cluster, from `deploy/kustomize`. `deploy/kustomize/overlays/README.md` walks through onboarding:
+1. register the target with `hcp target register`, which prints its credential as a Secret;
+2. apply the overlay for EKS, AKS, GKE or an on-premises cluster;
+3. run `hcp agent --verify` inside the agent pod.
+
+`deploy/terraform/<cloud>` creates the store and the agent's and runners' workload identities. `hcp agent --dry-run` prints every call an agent configuration makes.
 
 ### Studies
 

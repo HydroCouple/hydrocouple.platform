@@ -1,0 +1,37 @@
+# Google GKE with Cloud Storage. Workload Identity Federation for GKE gives the agent and
+# the runners their own service accounts (deploy/terraform/gcp prints both).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+components:
+  - ../../components/kueue
+images:
+  - name: hydrocouple/agent
+    newName: REPLACE-registry/hydrocouple/agent
+    digest: sha256:REPLACE
+configMapGenerator:
+  - name: hcp-agent-config
+    files: [agent.json]
+  - name: hcp-image-keys
+    files: [release.pub]
+patches:
+  - target: {kind: ServiceAccount, name: hcp-agent}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: hydrocouple-agent@REPLACE-project.iam.gserviceaccount.com
+  - target: {kind: ServiceAccount, name: hcp-runner}
+    patch: |-
+      - op: add
+        path: /metadata/annotations
+        value:
+          iam.gke.io/gcp-service-account: hydrocouple-runner@REPLACE-project.iam.gserviceaccount.com
+  # The store's endpoint: private.googleapis.com, for Private Google Access.
+  - target: {kind: NetworkPolicy, name: hcp-runner-storage}
+    patch: |-
+      - op: replace
+        path: /spec/egress/0/to
+        value:
+          - ipBlock: {cidr: 199.36.153.8/30}

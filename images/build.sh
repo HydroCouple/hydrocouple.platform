@@ -1,18 +1,27 @@
 #!/usr/bin/env bash
-# Build, push, describe and sign the runner image.
+# Build, push, describe and sign a platform image: the runner or the agent.
 #
-#   images/build-runner.sh --base REGISTRY/python@sha256:... --image REGISTRY/hydrocouple/runner \
+#   images/build.sh runner|agent --base REGISTRY/python@sha256:... --image REGISTRY/NAME \
 #       --tag 0.1.0 --python python3.10 [--find-links DIR]... [--local PATH]... \
 #       [--key cosign.key] [--no-tlog] [--http-registry] [--out DIR]
 #
 # The wheelhouse is built with --python, which must match the base image's Python.
 # --find-links adds directories of local wheels (an unpublished engine build); --local
-# adds source checkouts to build (openswmm.gymnasium). With --key the image is signed with
-# cosign and its SPDX SBOM (made by syft) attached as an attestation. The image digest is
-# printed last, for the control plane's workflow registry (HCP_WORKFLOW_IMAGES).
+# adds source checkouts to build (openswmm.gymnasium). The agent image also gets cosign
+# (COSIGN_VERSION), checked against its published checksum. With --key the image is
+# signed with cosign and its SPDX SBOM (made by syft) attached as an attestation. The
+# image digest is printed last: for the workflow registry (HCP_WORKFLOW_IMAGES) or the
+# agent's Deployment.
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(dirname "$here")"
+kind="${1:-}"; shift || true
+case "$kind" in
+  runner) extras="runner,gym,s3,azure,gcs" ;;
+  agent) extras="agent,s3,azure,gcs" ;;
+  *) echo "usage: images/build.sh runner|agent --base ... --image ..." >&2; exit 2 ;;
+esac
+COSIGN_VERSION="${COSIGN_VERSION:-v2.6.1}"
 base="" image="" tag="dev" python="python3" key="" out="" tlog=1 http=0
 links=() locals=()
 while [ $# -gt 0 ]; do
@@ -32,12 +41,12 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$base" ] && [ -n "$image" ] || { echo "--base and --image are required" >&2; exit 2; }
 case "$base" in *@sha256:*) ;; *) echo "--base must be pinned by digest" >&2; exit 2 ;; esac
-out="${out:-$repo/test_artifacts/images/runner-$tag}"
+out="${out:-$repo/test_artifacts/images/$kind-$tag}"
 ctx="$out/context"
 rm -rf "$ctx" && mkdir -p "$ctx/wheelhouse"
-cp "$here/runner/Dockerfile" "$ctx/"
+cp "$here/$kind/Dockerfile" "$ctx/"
 
-# The wheelhouse: this package with the runner and gym extras, and everything they need.
+# The wheelhouse: this package with the image's extras, and everything they need.
 "$python" -m venv "$out/build-venv"
 "$out/build-venv/bin/pip" install -q --upgrade pip wheel
 args=()
@@ -46,7 +55,15 @@ for p in "${locals[@]}"; do
   "$out/build-venv/bin/pip" wheel -q --no-deps --wheel-dir "$ctx/wheelhouse" "$p"
 done
 "$out/build-venv/bin/pip" wheel -q --wheel-dir "$ctx/wheelhouse" --find-links "$ctx/wheelhouse" \
-  "${args[@]}" "$repo[runner,gym,s3,azure,gcs]"
+  "${args[@]}" "$repo[$extras]"
+
+if [ "$kind" = agent ]; then
+  release="https://github.com/sigstore/cosign/releases/download/$COSIGN_VERSION"
+  curl -sSfL -o "$ctx/cosign" "$release/cosign-linux-amd64"
+  curl -sSfL -o "$out/cosign_checksums.txt" "$release/cosign_checksums.txt"
+  want="$(awk '$2 == "cosign-linux-amd64" {print $1}' "$out/cosign_checksums.txt")"
+  echo "$want  $ctx/cosign" | sha256sum -c - >/dev/null
+fi
 
 docker build --build-arg BASE="$base" -t "$image:$tag" "$ctx"
 docker push "$image:$tag" >/dev/null

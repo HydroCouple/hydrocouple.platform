@@ -1,0 +1,15 @@
+# The execution agent for a Kubernetes target. Overlays (../overlays) add the site's agent
+# configuration, pinned image keys, image digests, workload identity and storage egress.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: hydrocouple
+resources:
+  - namespace.yaml
+  - serviceaccounts.yaml
+  - rbac.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicies.yaml
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: hydrocouple

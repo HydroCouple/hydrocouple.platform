@@ -238,6 +238,7 @@ def test_a_study_on_a_kubernetes_pool_matches_a_local_run(
     shutil.copyfile(model, local_model)
     reference = run_study(EnvConfig.model_validate(env_config(str(local_model))), opt,
                           artifact_dir / "local")
+    agent.run_once()  # report the Kubernetes capabilities before the study is checked
     thread = threading.Thread(target=loop, daemon=True)
     thread.start()
     try:

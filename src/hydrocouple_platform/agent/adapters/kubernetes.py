@@ -52,6 +52,15 @@ STUCK_REASONS = {
 }
 
 
+# What the agent's Role must allow in its namespace (deploy/kustomize/base/rbac.yaml).
+REQUIRED_PERMISSIONS = [
+    *[(verb, "batch", "jobs", "") for verb in ("create", "get", "list", "delete")],
+    *[(verb, "", "pods", "") for verb in ("get", "list")],
+    ("get", "", "pods", "log"),
+    *[(verb, "", "secrets", "") for verb in ("create", "get", "list", "patch", "delete")],
+]
+
+
 class StoreVolume(BaseModel):
     """The agent's ``file://`` store on a shared volume (an NFS claim on premises), which
     runners mount at ``mount_path`` and use as ``file://<mount_path>``."""
@@ -93,6 +102,10 @@ class KubernetesConfig(BaseModel):
     # A Secret whose keys become the runner's environment: credentials for an
     # S3-compatible store on premises. Cloud targets use workload identity instead.
     runner_env_secret: str | None = None
+    # Labels and annotations on runner pods, for workload identity: on AKS
+    # {"azure.workload.identity/use": "true"}; EKS and GKE need only the ServiceAccount.
+    runner_pod_labels: dict[str, str] = Field(default_factory=dict)
+    runner_pod_annotations: dict[str, str] = Field(default_factory=dict)
     image_pull_secrets: list[str] = Field(default_factory=list)
     node_selector: dict[str, str] = Field(default_factory=dict)
     tolerations: list[dict[str, Any]] = Field(default_factory=list)
@@ -146,47 +159,25 @@ def build_secret(lease: LeaseGrant, secrets: dict[str, str] | None) -> dict:
             "stringData": data}
 
 
-def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
-              env: dict[str, str] | None, has_secrets: bool) -> dict:
-    spec = lease.spec
-    name = job_name(lease.attempt_id)
-    res = spec.resources
-    pod_labels = {**labels_for(lease), f"{LABEL}/role": "runner"}
-    job_labels = dict(pod_labels)
-    if cfg.queue_name:
-        job_labels[KUEUE_QUEUE_LABEL] = cfg.queue_name
-
-    amounts = {"cpu": _quantity(res.cpu), "memory": _quantity(res.memory_gib, "Gi"),
-               "ephemeral-storage": _quantity(res.scratch_gib, "Gi")}
-    limits = dict(amounts)  # requests equal limits: Guaranteed QoS at pinned threads
-    node_selector = dict(cfg.node_selector)
-    if res.gpu is not None:
-        gpu = cfg.gpus[res.gpu]
-        limits[gpu.resource] = "1"
-        node_selector.update(gpu.node_selector)
-
-    variables = {**(env or {}), "OMP_NUM_THREADS": str(spec.runtime.threads),
-                 "PYTHONUNBUFFERED": "1", "HOME": WORKDIR}
-    items = [{"key": "spec.json", "path": "spec.json"}]
-    if has_secrets:
-        variables["HCP_RUNNER_SECRETS_FILE"] = f"{ATTEMPT_DIR}/secrets.json"
-        items.append({"key": "secrets.json", "path": "secrets.json"})
-
-    mounts = [{"name": "work", "mountPath": WORKDIR},
-              {"name": "tmp", "mountPath": "/tmp"},
-              {"name": "attempt", "mountPath": ATTEMPT_DIR, "readOnly": True}]
+def _runner_pod(cfg: KubernetesConfig, *, image: str, command: list[str], store_uri: str,
+                variables: dict[str, str], amounts: dict[str, str], limits: dict[str, str],
+                node_selector: dict[str, str], attempt_secret: tuple[str, list] | None) -> dict:
+    """The runner pod: unprivileged, with no service-account token, a read-only root
+    filesystem, an emptyDir working directory, and the attempt's Secret when it has one."""
+    mounts = [{"name": "work", "mountPath": WORKDIR}, {"name": "tmp", "mountPath": "/tmp"}]
     volumes = [{"name": "work", "emptyDir": {"sizeLimit": amounts["ephemeral-storage"]}},
-               {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}},
-               {"name": "attempt", "secret": {"secretName": name, "items": items,
-                                              "defaultMode": 0o440}}]
+               {"name": "tmp", "emptyDir": {"sizeLimit": "1Gi"}}]
+    if attempt_secret is not None:
+        secret_name, items = attempt_secret
+        mounts.append({"name": "attempt", "mountPath": ATTEMPT_DIR, "readOnly": True})
+        volumes.append({"name": "attempt", "secret": {"secretName": secret_name, "items": items,
+                                                      "defaultMode": 0o440}})
     if cfg.store_volume is not None:
         sv = cfg.store_volume
-        store_uri = "file://" + sv.mount_path  # the agent's store, as runners see it
         mounts.append({"name": "store", "mountPath": sv.mount_path})
         volumes.append({"name": "store", **(
             {"persistentVolumeClaim": {"claimName": sv.claim_name}} if sv.claim_name else
             {"hostPath": {"path": sv.host_path, "type": "Directory"}})})
-
     pod_spec: dict[str, Any] = {
         "restartPolicy": "Never",
         "serviceAccountName": cfg.runner_service_account,
@@ -197,13 +188,10 @@ def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
                             "runAsGroup": cfg.run_as_user, "fsGroup": cfg.run_as_user,
                             "seccompProfile": {"type": "RuntimeDefault"}},
         "containers": [{
-            "name": CONTAINER, "image": spec.runtime.image, "imagePullPolicy": "IfNotPresent",
-            "command": ["python", "-m", "hydrocouple_platform.runner",
-                        "--spec", f"{ATTEMPT_DIR}/spec.json",
-                        "--attempt-id", lease.attempt_id,
-                        "--attempt-number", str(lease.fencing_token),
-                        "--store", store_uri, "--workdir", WORKDIR],
-            "env": [{"name": k, "value": v} for k, v in sorted(variables.items())],
+            "name": CONTAINER, "image": image, "imagePullPolicy": "IfNotPresent",
+            "command": [*command, "--store", runner_store_uri(cfg, store_uri)],
+            "env": [{"name": k, "value": v} for k, v in sorted(
+                {**variables, "PYTHONUNBUFFERED": "1", "HOME": WORKDIR}.items())],
             **({"envFrom": [{"secretRef": {"name": cfg.runner_env_secret}}]}
                if cfg.runner_env_secret else {}),
             "resources": {"requests": amounts, "limits": limits},
@@ -220,21 +208,79 @@ def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
         pod_spec["tolerations"] = cfg.tolerations
     if cfg.image_pull_secrets:
         pod_spec["imagePullSecrets"] = [{"name": n} for n in cfg.image_pull_secrets]
+    return pod_spec
 
+
+def runner_store_uri(cfg: KubernetesConfig, store_uri: str) -> str:
+    """The agent's store as runners see it: a shared volume's mount path, or the same URI."""
+    return "file://" + cfg.store_volume.mount_path if cfg.store_volume else store_uri
+
+
+def _job(cfg: KubernetesConfig, name: str, labels: dict[str, str], pod_spec: dict,
+         deadline: int) -> dict:
+    job_labels = dict(labels)
+    if cfg.queue_name:
+        job_labels[KUEUE_QUEUE_LABEL] = cfg.queue_name
+    template = {"metadata": {"labels": {**cfg.runner_pod_labels, **labels}}, "spec": pod_spec}
+    if cfg.runner_pod_annotations:
+        template["metadata"]["annotations"] = dict(cfg.runner_pod_annotations)
     return {
         "apiVersion": "batch/v1", "kind": "Job",
         "metadata": {"name": name, "labels": job_labels},
         "spec": {
             "backoffLimit": 0,  # the platform's retry budget is the only one
             "completions": 1, "parallelism": 1,
-            "activeDeadlineSeconds": spec.limits.execution_timeout_seconds,
+            "activeDeadlineSeconds": deadline,
             "ttlSecondsAfterFinished": cfg.ttl_seconds_after_finished,
             # An eviction or preemption fails the Job at once and is reported as an interruption.
             "podFailurePolicy": {"rules": [{"action": "FailJob", "onPodConditions": [
                 {"type": "DisruptionTarget", "status": "True"}]}]},
-            "template": {"metadata": {"labels": pod_labels}, "spec": pod_spec},
+            "template": template,
         },
     }
+
+
+def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
+              env: dict[str, str] | None, has_secrets: bool) -> dict:
+    spec = lease.spec
+    name = job_name(lease.attempt_id)
+    res = spec.resources
+    amounts = {"cpu": _quantity(res.cpu), "memory": _quantity(res.memory_gib, "Gi"),
+               "ephemeral-storage": _quantity(res.scratch_gib, "Gi")}
+    limits = dict(amounts)  # requests equal limits: Guaranteed QoS at pinned threads
+    node_selector = dict(cfg.node_selector)
+    if res.gpu is not None:
+        gpu = cfg.gpus[res.gpu]
+        limits[gpu.resource] = "1"
+        node_selector.update(gpu.node_selector)
+    variables = {**(env or {}), "OMP_NUM_THREADS": str(spec.runtime.threads)}
+    items = [{"key": "spec.json", "path": "spec.json"}]
+    if has_secrets:
+        variables["HCP_RUNNER_SECRETS_FILE"] = f"{ATTEMPT_DIR}/secrets.json"
+        items.append({"key": "secrets.json", "path": "secrets.json"})
+    pod_spec = _runner_pod(
+        cfg, image=spec.runtime.image, store_uri=store_uri, variables=variables,
+        command=["python", "-m", "hydrocouple_platform.runner",
+                 "--spec", f"{ATTEMPT_DIR}/spec.json", "--attempt-id", lease.attempt_id,
+                 "--attempt-number", str(lease.fencing_token), "--workdir", WORKDIR],
+        amounts=amounts, limits=limits, node_selector=node_selector,
+        attempt_secret=(name, items))
+    return _job(cfg, name, {**labels_for(lease), f"{LABEL}/role": "runner"}, pod_spec,
+                spec.limits.execution_timeout_seconds)
+
+
+def build_probe_job(cfg: KubernetesConfig, image: str, store_uri: str, key: str,
+                    name: str) -> dict:
+    """``agent verify``: a runner pod, exactly as attempts get one, that writes ``key``."""
+    amounts = {"cpu": "250m", "memory": "512Mi", "ephemeral-storage": "1Gi"}
+    pod_spec = _runner_pod(
+        cfg, image=image, store_uri=store_uri, variables={},
+        command=["python", "-m", "hydrocouple_platform.runner.probe", "--key", key],
+        amounts=amounts, limits=dict(amounts), node_selector=dict(cfg.node_selector),
+        attempt_secret=None)
+    # Labelled as a runner, so the runners' network policy applies to it too.
+    return _job(cfg, name, {**MANAGED_BY, f"{LABEL}/role": "runner", f"{LABEL}/probe": "true"},
+                pod_spec, 600)
 
 
 def _timestamp(value: str) -> tuple[int, int]:
@@ -401,6 +447,57 @@ class KubernetesAdapter:
 
     def handles(self) -> list[str]:
         return list(self._tracked)
+
+    # -- onboarding (hcp agent --verify) ------------------------------------------------
+
+    def missing_permissions(self) -> list[str]:
+        """The namespaced permissions this agent needs and lacks, by SelfSubjectAccessReview."""
+        from kubernetes import client as k8s
+
+        auth = k8s.AuthorizationV1Api(self._api_client)
+        missing = []
+        for verb, group, resource, sub in REQUIRED_PERMISSIONS:
+            review = auth.create_self_subject_access_review({
+                "apiVersion": "authorization.k8s.io/v1", "kind": "SelfSubjectAccessReview",
+                "spec": {"resourceAttributes": {
+                    "namespace": self.cfg.namespace, "verb": verb, "group": group,
+                    "resource": resource, "subresource": sub}}})
+            if not review.status.allowed:
+                missing.append(f"{verb} {resource}{'/' + sub if sub else ''}")
+        return missing
+
+    def run_probe(self, image: str, store_uri: str, key: str,
+                  timeout: float = 300) -> tuple[bool, str]:
+        """Run the verification pod; returns whether it succeeded and its log tail."""
+        import uuid
+
+        from kubernetes.client.rest import ApiException
+
+        name = f"hc-verify-{uuid.uuid4().hex[:8]}"
+        ns = self.cfg.namespace
+        self._batch.create_namespaced_job(ns, build_probe_job(self.cfg, image, store_uri, key,
+                                                              name))
+        deadline = time.monotonic() + timeout
+        try:
+            while time.monotonic() < deadline:
+                job = self._batch.read_namespaced_job(name, ns)
+                done = {c.type for c in (job.status.conditions or []) if c.status == "True"}
+                if done & {"Complete", "Failed"}:
+                    pods = self._core.list_namespaced_pod(
+                        ns, label_selector=f"batch.kubernetes.io/job-name={name}").items
+                    tail = ""
+                    if pods:
+                        try:
+                            tail = self._core.read_namespaced_pod_log(
+                                pods[0].metadata.name, ns, container=CONTAINER, tail_lines=20)
+                        except ApiException:
+                            pass
+                    return "Complete" in done, tail.strip()
+                time.sleep(1)
+            return False, f"the verification pod did not finish within {timeout:g} s"
+        finally:
+            self._batch.delete_namespaced_job(name, ns, propagation_policy="Background")
+
 
     # -- status ---------------------------------------------------------------------------
 
