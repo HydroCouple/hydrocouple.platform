@@ -180,6 +180,22 @@ The runner reads the image from its spec, so the attempt manifest's provenance n
 - Images chosen by parameters.
 - Running an unverified image because verification was unavailable.
 
+## 12. Deletion is asynchronous, confirmed by the agent, and blocked rather than assumed
+
+**Decision.** `DELETE /v1/runs/{id}` (and `/v1/studies/{id}`, through its run) records a deletion and marks the run deleting. A deleting run gets no new work, no new grants and no results. Its active attempts are asked to stop, and an attempt that finishes anyway is not published.
+
+**Waiting for writers.** Erasure starts only once no attempt of the run may still write. An attempt counts as a possible writer until its agent confirms it stopped:
+- by reporting its result;
+- or by polling without holding it once it ended (`attempts.released_at`).
+
+An attempt the reconciler marked lost or timed out on the server's clock is not confirmed. If confirmation does not come within `deletion_writer_wait_seconds`, the deletion is `BLOCKED`. It says which attempt and when the agent last polled, and it continues when the agent confirms.
+
+**Erasure.** The target's agent deletes every object under the run's prefix, including old versions on S3, versioned Cloud Storage and versioned Blob Storage, and reports how many there were. A second pass after `deletion_recheck_seconds` removes anything written late. The deletion is `ERASED` only when a pass finds nothing left, and nothing is described as deleted before that.
+
+**What is kept.** Revisions are shared inputs and are kept, and the agent erases only `runs/<org>/<project>/<run>/` prefixes. The run's record stays as a tombstone, and its artifact records are removed.
+
+**Limits.** Blob Storage soft delete keeps deleted blobs recoverable for the account's retention period, and the module sets 7 days.
+
 ## Out of release 1
 
 - Checkpoint recovery for anything other than qualified single simulations. The engine's checkpoint session excludes callbacks, external drivers, live forcing, heat, quality and plugins, and composition `execution.mode: resume` is unimplemented.

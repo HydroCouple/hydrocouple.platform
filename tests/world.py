@@ -71,6 +71,9 @@ class DirectAgentClient:
     def complete_evaluations(self, token: str, body):
         return self.services.evaluation_complete(self.target_id, token, body)
 
+    def erasure(self, report):
+        self.services.agent_erasure_report(self.target_id, report)
+
 
 @dataclass
 class World:

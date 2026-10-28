@@ -39,6 +39,9 @@ class StorageBackend(Protocol):
     def stat(self, key: str) -> tuple[int, str] | None: ...
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
+    # Every object under ``prefix`` (and its old versions, where the store keeps them);
+    # returns how many objects (not versions) there were.
+    def delete_prefix(self, prefix: str) -> int: ...
     # ``sha256``, when known, binds an upload grant to that content where the store can.
     def grant(self, key: str, method: str, expires_in: int,
               sha256: str | None = None) -> Grant: ...
@@ -63,6 +66,14 @@ def object_key(prefix: str, key: str) -> str:
     """``key`` under a store's prefix, refusing keys that escape it."""
     check_safe_path(key)
     return f"{prefix}{key}"
+
+
+def checked_prefix(prefix: str) -> str:
+    """A key prefix to delete under: a safe path ending in a slash."""
+    if not prefix.endswith("/"):
+        raise ValueError(f"prefix {prefix!r} must end in a slash")
+    check_safe_path(prefix[:-1])
+    return prefix
 
 
 class LocalStore:
@@ -117,6 +128,14 @@ class LocalStore:
         target = self.path(key)
         if target.exists():
             target.unlink()
+
+    def delete_prefix(self, prefix: str) -> int:
+        top = self.path(checked_prefix(prefix)[:-1])
+        if not top.is_dir():
+            return 0
+        count = sum(1 for p in top.rglob("*") if p.is_file())
+        shutil.rmtree(top)
+        return count
 
     def grant(self, key: str, method: str, expires_in: int,
               sha256: str | None = None) -> Grant:

@@ -18,7 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..contracts.agent import Grant
-from . import ObjectExists, object_key, sha256_stream, split_uri
+from . import ObjectExists, checked_prefix, object_key, sha256_stream, split_uri
 
 
 class GCSStore:
@@ -75,6 +75,20 @@ class GCSStore:
             self._blob(key).delete()
         except NotFound:
             pass
+
+    def delete_prefix(self, prefix: str) -> int:
+        """Every generation of every object under the prefix."""
+        from google.api_core.exceptions import NotFound
+
+        name = self.prefix + checked_prefix(prefix)
+        count = 0
+        for blob in self.client.list_blobs(self.bucket, prefix=name, versions=True):
+            count += blob.time_deleted is None  # live, not a noncurrent version
+            try:
+                self.bucket.delete_blob(blob.name, generation=blob.generation)
+            except NotFound:
+                pass
+        return count
 
     def grant(self, key: str, method: str, expires_in: int,
               sha256: str | None = None) -> Grant:

@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..contracts.agent import Grant
-from . import ObjectExists, object_key, sha256_stream, split_uri
+from . import ObjectExists, checked_prefix, object_key, sha256_stream, split_uri
 
 
 class AzureBlobStore:
@@ -80,6 +80,29 @@ class AzureBlobStore:
             self._blob(key).delete_blob()
         except ResourceNotFoundError:
             pass
+
+    def delete_prefix(self, prefix: str) -> int:
+        """Every blob under the prefix, with its versions where the account keeps them.
+        Soft-deleted blobs stay recoverable for the account's retention period."""
+        from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
+
+        name = self.prefix + checked_prefix(prefix)
+        try:
+            blobs = list(self._container.list_blobs(name_starts_with=name, include=["versions"]))
+        except HttpResponseError:  # an account (or emulator) without versioning
+            blobs = list(self._container.list_blobs(name_starts_with=name))
+        count = 0
+        for blob in blobs:
+            current = getattr(blob, "is_current_version", None) is not False
+            count += current
+            try:
+                if current:
+                    self._container.delete_blob(blob.name, delete_snapshots="include")
+                else:
+                    self._container.delete_blob(blob.name, version_id=blob.version_id)
+            except ResourceNotFoundError:
+                pass
+        return count
 
     def grant(self, key: str, method: str, expires_in: int,
               sha256: str | None = None) -> Grant:

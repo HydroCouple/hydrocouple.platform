@@ -1,0 +1,118 @@
+{
+  "$defs": {
+    "DeletionState": {
+      "enum": [
+        "REQUESTED",
+        "WAITING_FOR_WRITERS",
+        "BLOCKED",
+        "ERASING",
+        "VERIFYING",
+        "ERASED"
+      ],
+      "title": "DeletionState",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/deletion-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "completed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Completed At"
+    },
+    "deletion_id": {
+      "title": "Deletion Id",
+      "type": "string"
+    },
+    "next_action": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Action"
+    },
+    "objects_deleted": {
+      "title": "Objects Deleted",
+      "type": "integer"
+    },
+    "passes": {
+      "title": "Passes",
+      "type": "integer"
+    },
+    "prefixes": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Prefixes",
+      "type": "array"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "requested_at": {
+      "format": "date-time",
+      "title": "Requested At",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/DeletionState"
+    },
+    "study_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Study Id"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "deletion_id",
+    "run_id",
+    "state",
+    "prefixes",
+    "passes",
+    "objects_deleted",
+    "requested_at",
+    "updated_at"
+  ],
+  "title": "DeletionView",
+  "type": "object"
+}

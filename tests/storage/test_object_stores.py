@@ -204,3 +204,38 @@ def test_large_s3_objects_are_written_in_parts_and_still_verified(s3_uri, artifa
     assert backend.stat("runs/r1/att1/big.out") == (big.stat().st_size, sha256_file(big))
     with pytest.raises(ObjectExists):
         backend.put_file("runs/r1/att1/big.out", big, if_absent=True)
+
+
+def test_deleting_a_prefix_removes_everything_under_it_and_nothing_else(store, artifact_dir):
+    _, backend = store
+    a, b = _files(artifact_dir)
+    doomed = ["runs/o/p/r1/a1/model.out", "runs/o/p/r1/a1/run.json", "runs/o/p/r1/a2/x.json"]
+    kept = ["runs/o/p/r10/a1/model.out", "revisions/rev1/model/model.inp"]
+    for key in doomed + kept:
+        backend.put_file(key, a)
+    backend.put_file(doomed[0], b)  # a second version, where the store keeps versions
+    assert backend.delete_prefix("runs/o/p/r1/") == 3
+    assert not any(backend.exists(key) for key in doomed)
+    assert all(backend.exists(key) for key in kept)  # a sibling run and a shared input
+    assert backend.delete_prefix("runs/o/p/r1/") == 0
+    for bad in ("runs/o/p/r1", "../x/", "runs//r1/", "/runs/o/p/r1/"):
+        with pytest.raises(ValueError):
+            backend.delete_prefix(bad)
+
+
+def test_deleting_an_s3_prefix_removes_old_versions_too(s3_uri, artifact_dir):
+    import boto3
+
+    base, _, query = s3_uri.partition("?")
+    endpoint = dict(p.split("=", 1) for p in query.split("&"))["endpoint_url"]
+    client = boto3.client("s3", endpoint_url=endpoint)
+    client.create_bucket(Bucket="hcp-versioned")
+    client.put_bucket_versioning(Bucket="hcp-versioned",
+                                 VersioningConfiguration={"Status": "Enabled"})
+    backend = open_store(f"s3://hcp-versioned/site?{query}")
+    a, b = _files(artifact_dir)
+    backend.put_file("runs/o/p/r1/a1/model.out", a)
+    backend.put_file("runs/o/p/r1/a1/model.out", b)  # two versions of one object
+    assert backend.delete_prefix("runs/o/p/r1/") == 1
+    left = client.list_object_versions(Bucket="hcp-versioned", Prefix="site/runs/o/p/r1/")
+    assert not left.get("Versions") and not left.get("DeleteMarkers")

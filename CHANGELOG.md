@@ -23,4 +23,5 @@ First implementation of the cloud execution plan (milestones M1 to M3).
   - `deploy/kustomize`: a base with a namespaced Role, separate agent and runner identities, network policies limiting runner egress to DNS, the gateway and the store, and the restricted Pod Security Standard; overlays for EKS, AKS, GKE and on-premises clusters; and a Kueue component;
   - `deploy/terraform` modules for the store and workload identities on AWS, Azure and Google Cloud;
   - `hcp agent --config` (agent.json), `--verify` (including a runner pod) and `--dry-run`, and `hcp target register`.
+- Run and study deletion (M4): asynchronous erasure by the target's agent once every attempt is confirmed stopped, with a second pass for late writes, `BLOCKED` with a reason when it cannot be confirmed, shared revisions kept, and the run kept as a tombstone. Migration `0003`.
 - Runners inherit none of the agent's `HCP_*` settings, so they never hold the agent credential; the evaluator's gateway token reaches it on stdin.

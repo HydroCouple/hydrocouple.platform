@@ -10,7 +10,7 @@ import time
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -91,6 +91,7 @@ class AgentServices(ServiceBase):
                 target.capabilities = capabilities
 
             held = set(req.held_attempts)
+            self._release_attempts(s, target.id, req.agent_instance, held, now)
             leases = self._redeliver(s, target, req, held)
             slots = req.free_slots - len(leases)
             if slots > 0:
@@ -118,7 +119,22 @@ class AgentServices(ServiceBase):
             ]
             return PollResponse(leases=leases, grant_requests=grants,
                                 cancel_attempts=self._to_stop(s, target.id, held),
+                                erasures=self.pending_erasures(  # type: ignore[attr-defined]
+                                    s, target.id),
                                 poll_after_seconds=self.settings.heartbeat_interval_seconds)
+
+    @staticmethod
+    def _release_attempts(s: Session, target_id: str, instance: str, held: set[str],
+                          now) -> None:
+        """Ended attempts this agent no longer holds: nothing runs for them any more."""
+        terminal = [state.value for state in ATTEMPT_TERMINAL]
+        query = (update(Attempt).where(
+            Attempt.target_id == target_id, Attempt.agent_instance == instance,
+            Attempt.released_at.is_(None), Attempt.state.in_(terminal))
+            .values(released_at=now))
+        if held:
+            query = query.where(Attempt.id.notin_(held))
+        s.execute(query)
 
     def _to_stop(self, s: Session, target_id: str, held: set[str]) -> list[str]:
         """Held attempts the agent must stop: cancelled, superseded, ended or unknown."""
@@ -288,7 +304,11 @@ class AgentServices(ServiceBase):
                 return ResultAck(job_state=job.state, canonical=job.study_id is None,
                                  retry_scheduled=False)
             self._authority(job, attempt, res.fencing_token)
+            attempt.released_at = self.now()  # the agent reports it finished
             spec = JobSpec.model_validate(job.spec)
+            if run.deleting_at is not None and res.outcome == AttemptOutcome.SUCCEEDED:
+                # Deleted while it ran: its outputs are being erased, so nothing is published.
+                res = res.model_copy(update={"outcome": AttemptOutcome.CANCELLED})
 
             if res.outcome == AttemptOutcome.SUCCEEDED:
                 manifest, problems, cls = self._check_manifest(spec, attempt, res)
@@ -298,7 +318,8 @@ class AgentServices(ServiceBase):
                     "outcome": AttemptOutcome.FAILED, "failure_class": cls,
                     "diagnostics": {**res.diagnostics, "manifest_problems": problems},
                 })
-            elif res.outcome == AttemptOutcome.CANCELLED and not job.cancel_requested:
+            elif (res.outcome == AttemptOutcome.CANCELLED and not job.cancel_requested
+                  and run.deleting_at is None):
                 # Nobody asked: an eviction, preemption or shutdown stopped it. Retry.
                 res = res.model_copy(update={
                     "outcome": AttemptOutcome.FAILED, "failure_class": FailureClass.INTERRUPTED})
@@ -560,4 +581,5 @@ class AgentServices(ServiceBase):
                         rev.state = "FAILED"
                 counts["grants_expired"] += 1
         counts.update(self.reconcile_studies(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_deletions(limit))  # type: ignore[attr-defined]
         return counts

@@ -167,6 +167,26 @@ class PlatformClient:
                 return view
             time.sleep(interval)
 
+    def delete_run(self, run_id: str) -> dict:
+        """Ask for a run's results to be erased; returns the deletion to follow."""
+        return self._call("DELETE", f"/v1/runs/{run_id}")
+
+    def delete_study(self, study_id: str) -> dict:
+        return self._call("DELETE", f"/v1/studies/{study_id}")
+
+    def deletion(self, deletion_id: str) -> dict:
+        return self._call("GET", f"/v1/deletions/{deletion_id}")
+
+    def wait_for_deletion(self, deletion_id: str, timeout: float = 3600.0,
+                          interval: float = 1.0) -> dict:
+        """Wait until the erasure is confirmed (ERASED) or reported blocked (BLOCKED)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            view = self.deletion(deletion_id)
+            if view["state"] in ("ERASED", "BLOCKED") or time.monotonic() > deadline:
+                return view
+            time.sleep(interval)
+
     def download(self, run_id: str, paths: list[str], destination: Path,
                  timeout: float = 300.0) -> dict[str, Path]:
         """Download published artifacts directly from storage into ``destination``."""

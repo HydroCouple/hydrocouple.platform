@@ -37,6 +37,7 @@ from ..contracts.agent import (
     PollResponse,
     ResultAck,
 )
+from ..contracts.deletion import Erasure, ErasureReport
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import EgressPolicy, FailureClass, JobClass
 from ..contracts.manifests import AttemptManifest, sha256_of
@@ -97,6 +98,9 @@ class AgentClient:
 
     def fulfill(self, body: GrantFulfillment) -> None:
         self._post("/v1/agent/grants", body)
+
+    def erasure(self, report: ErasureReport) -> None:
+        self._post("/v1/agent/erasures", report)
 
     def heartbeat(self, token: str, hb: Heartbeat) -> HeartbeatAck:
         return HeartbeatAck.model_validate(self._post("/v1/agent/heartbeat", hb, token))
@@ -196,6 +200,8 @@ class Agent:
                 held = self.held.get(attempt_id)
                 if held is not None and held.handle is not None:
                     self.adapter.cancel(held.handle)
+            for erasure in response.erasures:
+                self._erase(erasure)
         self._report()
         return response
 
@@ -360,6 +366,26 @@ class Agent:
                 problems=problems))
         except (httpx.HTTPError, PlatformError) as exc:
             log.warning("grant answer failed; the request will be redelivered: %s", exc)
+
+    def _erase(self, erasure: Erasure) -> None:
+        """Delete a deleted run's objects, with this site's own storage identity. Only run
+        prefixes are ever erased, never revisions, which other runs may share."""
+        deleted, problems = 0, []
+        for prefix in erasure.prefixes:
+            parts = prefix.split("/")
+            if len(parts) != 5 or parts[0] != "runs" or parts[4] != "" or not all(parts[1:4]):
+                problems.append(f"{prefix} is not a run prefix (runs/<org>/<project>/<run>/)")
+                continue
+            try:
+                deleted += self.store.delete_prefix(prefix)
+            except Exception as exc:  # any backend error is reported, and the pass retried
+                problems.append(f"{prefix}: {type(exc).__name__}: {exc}"[:500])
+        try:
+            self.client.erasure(ErasureReport(
+                deletion_id=erasure.deletion_id, pass_number=erasure.pass_number,
+                ok=not problems, objects_deleted=deleted, problems=problems))
+        except (httpx.HTTPError, PlatformError) as exc:
+            log.warning("erasure report failed; the erasure will be redelivered: %s", exc)
 
     def _forget(self, attempt_id: str) -> None:
         held = self.held.pop(attempt_id, None)

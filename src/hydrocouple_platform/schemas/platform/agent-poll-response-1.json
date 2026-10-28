@@ -97,6 +97,36 @@
       "title": "EgressPolicy",
       "type": "string"
     },
+    "Erasure": {
+      "additionalProperties": false,
+      "description": "Delete every object under ``prefixes`` and report how many there were.",
+      "properties": {
+        "deletion_id": {
+          "title": "Deletion Id",
+          "type": "string"
+        },
+        "pass_number": {
+          "minimum": 1,
+          "title": "Pass Number",
+          "type": "integer"
+        },
+        "prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Prefixes",
+          "type": "array"
+        }
+      },
+      "required": [
+        "deletion_id",
+        "pass_number",
+        "prefixes"
+      ],
+      "title": "Erasure",
+      "type": "object"
+    },
     "GrantMode": {
       "enum": [
         "upload",
@@ -597,6 +627,13 @@
         "type": "string"
       },
       "title": "Cancel Attempts",
+      "type": "array"
+    },
+    "erasures": {
+      "items": {
+        "$ref": "#/$defs/Erasure"
+      },
+      "title": "Erasures",
       "type": "array"
     },
     "grant_requests": {

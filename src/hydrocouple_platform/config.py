@@ -35,6 +35,10 @@ class ControlPlaneSettings(BaseSettings):
     grant_redeliver_seconds: int = Field(default=60, gt=0)
     max_revision_files: int = Field(default=5000, gt=0)
     max_revision_bytes: int = Field(default=20 * 1024**3, gt=0)
+    # Deletion: how long erasure waits for a run's attempts to stop before it reports
+    # itself blocked, and the delay before the second pass that removes late writes.
+    deletion_writer_wait_seconds: int = Field(default=900, gt=0)
+    deletion_recheck_seconds: int = Field(default=300, ge=0)
     # The workflow registry's images: "name@version" -> a signed image by digest
     # (HCP_WORKFLOW_IMAGES, as JSON). Container targets run only workflows listed here.
     workflow_images: dict[str, str] = Field(default_factory=dict)

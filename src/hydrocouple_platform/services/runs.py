@@ -452,9 +452,17 @@ class RunServices(ServiceBase):
                               "created_at": j.created_at.isoformat()} for j in page],
                     "next_before": page[-1].id if len(rows) > limit else None}
 
+    @staticmethod
+    def _not_deleted(run: Run) -> None:
+        if run.deleting_at is not None:
+            done = "was deleted" if run.deleted_at is not None else "is being deleted"
+            raise PlatformError(ErrorCode.NOT_FOUND, f"run {run.id} {done}",
+                                next_action="Query its deletion for the erasure's progress")
+
     def get_results(self, principal: Principal, run_id: str) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)
             study = s.scalar(select(Study.id).where(Study.run_id == run.id))
             if study is not None:
                 raise PlatformError(ErrorCode.NOT_READY,
@@ -485,6 +493,7 @@ class RunServices(ServiceBase):
     def request_downloads(self, principal: Principal, run_id: str, paths: list[str]) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)  # no new grants once deletion is requested
             if run.canonical_attempt_id is None:
                 raise PlatformError(ErrorCode.NOT_READY, f"run {run.id} is not published")
             arts = {a.path: a for a in s.scalars(select(Artifact).where(

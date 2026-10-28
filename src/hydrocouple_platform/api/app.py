@@ -31,6 +31,7 @@ from ..contracts.agent import (
     PollResponse,
     ResultAck,
 )
+from ..contracts.deletion import DeletionView, ErasureReport
 from ..contracts.errors import ErrorBody, ErrorCode, PlatformError
 from ..contracts.requests import (
     AgentSessionCreate,
@@ -238,6 +239,14 @@ def create_app(
     def downloads(run_id: str, body: DownloadBody, p: User) -> dict:
         return svc.request_downloads(p, run_id, body.paths)
 
+    @app.delete("/v1/runs/{run_id}", status_code=202)
+    def delete_run(run_id: str, p: User) -> DeletionView:
+        return svc.delete_run(p, run_id)
+
+    @app.get("/v1/deletions/{deletion_id}")
+    def get_deletion(deletion_id: str, p: User) -> DeletionView:
+        return svc.get_deletion(p, deletion_id)
+
     @app.get("/v1/jobs/{job_id}")
     def get_job(job_id: str, p: User) -> JobView:
         return svc.get_job(p, job_id)
@@ -294,6 +303,10 @@ def create_app(
     def cancel_study(study_id: str, p: User) -> StudyView:
         return svc.cancel_study(p, study_id)
 
+    @app.delete("/v1/studies/{study_id}", status_code=202)
+    def delete_study(study_id: str, p: User) -> DeletionView:
+        return svc.delete_study(p, study_id)
+
     @app.get("/v1/studies/{study_id}/results")
     def study_results(study_id: str, p: User) -> dict:
         return svc.study_results(p, study_id)
@@ -328,6 +341,10 @@ def create_app(
     @app.post("/v1/agent/grants", status_code=204)
     def agent_grants(body: GrantFulfillment, t: DrainingAgent) -> None:
         svc.agent_fulfill_grant(t, body)
+
+    @app.post("/v1/agent/erasures")
+    def agent_erasures(body: ErasureReport, t: DrainingAgent) -> DeletionView:
+        return svc.agent_erasure_report(t.id, body)
 
     @app.post("/v1/agent/heartbeat")
     def agent_heartbeat(body: Heartbeat, t: DrainingAgent,

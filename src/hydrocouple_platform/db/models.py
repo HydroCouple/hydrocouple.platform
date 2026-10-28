@@ -27,6 +27,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from ..contracts.deletion import DeletionState
 from ..contracts.states import AttemptState, JobState
 
 
@@ -195,6 +196,9 @@ class Run(Base):
     canonical_attempt_id: Mapped[str | None] = mapped_column(String(40))
     published_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Deletion (plan §12): set when it is requested, and when the erasure is confirmed.
+    deleting_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    deleted_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     __table_args__ = (
         UniqueConstraint("organization_id", "idempotency_key", name="runs_idempotency"),
         Index("runs_history", "organization_id", "project_id", "created_at"),
@@ -255,9 +259,14 @@ class Attempt(Base):
     manifest: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64))
     last_sequence: Mapped[int] = mapped_column(Integer, default=-1)
+    # When its agent confirmed nothing runs for it any more: by reporting its result, or by
+    # polling without holding it once it ended. Until then it may still write (deletion).
+    released_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     __table_args__ = (
         CheckConstraint(_states_check(AttemptState), name="attempt_state_known"),
         UniqueConstraint("job_id", "number", name="attempt_fence_unique"),
+        Index("attempts_unreleased", "target_id", "agent_instance",
+              postgresql_where="released_at IS NULL"),
         Index("attempts_expiry", "state", "lease_expires_at"),
         Index("attempts_deadline", "state", "execution_deadline_at"),
     )
@@ -430,6 +439,36 @@ class Outbox(Base):
     processed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("outbox_pending", "processed_at", "available_at"),)
+
+
+class Deletion(Base):
+    """The confirmed erasure of one run's objects (contracts.deletion); one per run."""
+
+    __tablename__ = "deletions"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    target_id: Mapped[str] = mapped_column(ForeignKey("compute_targets.id"))
+    study_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studies.id", name="deletions_study_fk"))
+    state: Mapped[str] = mapped_column(String(30))
+    prefixes: Mapped[list[Any]] = mapped_column(JSONB)
+    passes: Mapped[int] = mapped_column(Integer, default=0)
+    objects_deleted: Mapped[int] = mapped_column(BigInteger, default=0)
+    reason: Mapped[str | None] = mapped_column(Text)
+    # When the agent may next be asked to erase, and when it last was.
+    not_before: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    delivered_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    requested_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    actor: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    requested_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()
+    completed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    __table_args__ = (
+        CheckConstraint(_states_check(DeletionState), name="deletion_state_known"),
+        Index("deletions_work", "state", "updated_at"),
+        Index("deletions_target", "target_id", "state"),
+    )
 
 
 class AuditRecord(Base):

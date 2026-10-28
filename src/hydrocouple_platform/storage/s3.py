@@ -20,7 +20,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..contracts.agent import Grant
-from . import ObjectExists, object_key, sha256_file, sha256_stream, split_uri
+from . import ObjectExists, checked_prefix, object_key, sha256_file, sha256_stream, split_uri
 
 SINGLE_PUT_LIMIT = 5 * 1024**3  # larger objects are uploaded in parts
 PART_SIZE = 64 * 1024**2
@@ -132,6 +132,31 @@ class S3Store:
 
     def delete(self, key: str) -> None:
         self.client.delete_object(Bucket=self.bucket, Key=self._key(key))
+
+    def delete_prefix(self, prefix: str) -> int:
+        """Every version and delete marker under the prefix, so nothing is recoverable."""
+        name = self.prefix + checked_prefix(prefix)
+        count, batch = 0, []
+        for page in self.client.get_paginator("list_object_versions").paginate(
+                Bucket=self.bucket, Prefix=name):
+            for version in page.get("Versions", []):
+                count += version.get("IsLatest", False)
+                batch.append({"Key": version["Key"], "VersionId": version["VersionId"]})
+            batch += [{"Key": m["Key"], "VersionId": m["VersionId"]}
+                      for m in page.get("DeleteMarkers", [])]
+            while len(batch) >= 1000:
+                self._delete_batch(batch[:1000])
+                batch = batch[1000:]
+        if batch:
+            self._delete_batch(batch)
+        return count
+
+    def _delete_batch(self, objects: list[dict]) -> None:
+        done = self.client.delete_objects(Bucket=self.bucket,
+                                          Delete={"Objects": objects, "Quiet": True})
+        if done.get("Errors"):
+            first = done["Errors"][0]
+            raise OSError(f"could not delete {first['Key']}: {first.get('Message')}")
 
     def grant(self, key: str, method: str, expires_in: int,
               sha256: str | None = None) -> Grant:

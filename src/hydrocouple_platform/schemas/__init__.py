@@ -11,7 +11,7 @@ import json
 import sys
 from pathlib import Path
 
-from ..contracts import agent, capabilities, errors, jobs, manifests, requests, studies
+from ..contracts import agent, capabilities, deletion, errors, jobs, manifests, requests, studies
 
 CONTRACTS = {
     "job-spec-1.json": jobs.JobSpec,
@@ -37,6 +37,8 @@ CONTRACTS = {
     "agent-evaluation-lease-response-1.json": studies.EvaluationLeaseResponse,
     "agent-evaluation-completion-1.json": studies.EvaluationCompletion,
     "agent-completion-ack-1.json": studies.CompletionAck,
+    "deletion-view-1.json": deletion.DeletionView,
+    "agent-erasure-report-1.json": deletion.ErasureReport,
 }
 
 PLATFORM_DIR = Path(__file__).parent / "platform"
