@@ -259,3 +259,82 @@ def test_a_study_on_a_kubernetes_pool_matches_a_local_run(
         assert b["objectives"] == pytest.approx(a["objectives"], rel=1e-12, abs=1e-9)
     assert [p["evaluation"] for p in result["pareto"]] == \
         [p["evaluation"] for p in reference["pareto"]]
+
+
+# -- object storage --------------------------------------------------------------------
+
+
+def upload_through_grants(world, inp: Path) -> dict:
+    """Package a model and upload it through the agent's grants, as a client would."""
+    import httpx
+
+    from hydrocouple_platform.contracts.requests import RevisionCreate
+    from hydrocouple_platform.packaging import package_swmm_model
+    from world import answer_grants
+
+    package = package_swmm_model(inp, world.root / "package")
+    svc = world.services
+    created = svc.create_revision(world.admin, RevisionCreate(
+        project_id=world.project_id, target_id=world.target_id, manifest=package.manifest))
+    answer_grants(world)
+    grants = svc.get_grant_request(world.admin, created["grant_request_id"])
+    by_key = {g["key"]: g for g in grants["grants"]}
+    for path, source in package.sources().items():
+        grant = by_key[created["storage_prefix"] + path]
+        httpx.put(grant["url"], content=Path(source).read_bytes(),
+                  headers=grant["headers"]).raise_for_status()
+    svc.finalize_revision(world.admin, created["revision_id"])
+    answer_grants(world)
+    return svc.get_revision(world.admin, created["revision_id"])
+
+
+def test_a_swmm_run_with_s3_storage_on_kubernetes(services, artifact_dir, kube, namespace,
+                                                    runner_image, image_key, monkeypatch):
+    """The store is S3 (moto on the node). The runner reaches it with credentials from a
+    Secret, as an S3-compatible store on premises would; cloud targets use workload
+    identity instead."""
+    from kubernetes import client as k8s
+
+    from emulators import moto
+    from hydrocouple_platform.storage import open_store
+
+    process, port = moto(host="0.0.0.0")
+    try:
+        credentials = {"AWS_ACCESS_KEY_ID": "testing", "AWS_SECRET_ACCESS_KEY": "testing",
+                       "AWS_DEFAULT_REGION": "us-east-1"}
+        for k, v in credentials.items():
+            monkeypatch.setenv(k, v)
+        endpoint = f"http://{node_address(kube)}:{port}"
+        import boto3
+
+        boto3.client("s3", endpoint_url=endpoint).create_bucket(Bucket="hcp-site")
+        uri = f"s3://hcp-site/platform?endpoint_url={endpoint}&region=us-east-1"
+        k8s.CoreV1Api(kube).create_namespaced_secret(namespace, {
+            "metadata": {"name": "store-credentials"}, "stringData": credentials})
+
+        world = make_world(services, artifact_dir)
+        world.store, world.store_uri = open_store(uri), uri
+        services.settings.workflow_images = {"swmm.simulation@1": runner_image}
+        cfg = KubernetesConfig(namespace=namespace, max_cpu=2, max_memory_gib=4, scratch_gib=8,
+                               runner_env_secret="store-credentials", poll_seconds=1,
+                               grace_seconds=10)
+        agent = Agent(DirectAgentClient(services, world.target_id),
+                      KubernetesAdapter(cfg, api_client=kube), world.store, uri,
+                      EgressPolicy.SUMMARIES,
+                      images=ImageVerifier(ImageTrust(keys=[image_key], allow_http_registry=True)))
+        agent.run_once()
+        revision = upload_through_grants(world, DATA / "site_drainage_example.inp")
+        assert revision["state"] == "READY"
+        accepted = submit(world, revision, "k8s-s3-run-0001")
+        drive(world, agent, lambda: services.get_job(world.admin, accepted.job_id).state
+              in TERMINAL)
+        job = services.get_job(world.admin, accepted.job_id)
+        assert job.state == "SUCCEEDED", job.failure
+        results = services.get_results(world.admin, accepted.run_id)
+        prefix = f"runs/{world.org_id}/{world.project_id}/{accepted.run_id}/"
+        for artifact in results["artifacts"]:  # every published object is in S3, as listed
+            key = f"{prefix}{job.attempts[-1]['attempt_id']}/{artifact['path']}"
+            assert world.store.stat(key) == (artifact["size"], artifact["sha256"])
+        agent.close()
+    finally:
+        process.kill()

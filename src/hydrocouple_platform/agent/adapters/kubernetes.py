@@ -90,6 +90,9 @@ class KubernetesConfig(BaseModel):
     slots: int = Field(default=8, ge=1)
     queue_name: str | None = None  # a Kueue LocalQueue in the namespace
     runner_service_account: str = "hcp-runner"
+    # A Secret whose keys become the runner's environment: credentials for an
+    # S3-compatible store on premises. Cloud targets use workload identity instead.
+    runner_env_secret: str | None = None
     image_pull_secrets: list[str] = Field(default_factory=list)
     node_selector: dict[str, str] = Field(default_factory=dict)
     tolerations: list[dict[str, Any]] = Field(default_factory=list)
@@ -201,6 +204,8 @@ def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
                         "--attempt-number", str(lease.fencing_token),
                         "--store", store_uri, "--workdir", WORKDIR],
             "env": [{"name": k, "value": v} for k, v in sorted(variables.items())],
+            **({"envFrom": [{"secretRef": {"name": cfg.runner_env_secret}}]}
+               if cfg.runner_env_secret else {}),
             "resources": {"requests": amounts, "limits": limits},
             "securityContext": {"allowPrivilegeEscalation": False,
                                 "readOnlyRootFilesystem": True,

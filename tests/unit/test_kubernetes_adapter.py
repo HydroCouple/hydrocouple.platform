@@ -111,7 +111,7 @@ def test_a_shared_store_volume_and_gpus_and_node_placement():
         store_volume={"mount_path": "/data/store", "claim_name": "hc-store"},
         gpus={"a100": {"node_selector": {"accelerator": "a100"}}},
         node_selector={"pool": "hydrocouple"}, tolerations=[{"key": "spot", "operator": "Exists"}],
-        image_pull_secrets=["mirror"])
+        image_pull_secrets=["mirror"], runner_env_secret="store-credentials")
     pod = build_job(cfg, lease(gpu="a100"), "file:///srv/agent/store", None, False)[
         "spec"]["template"]["spec"]
     command = pod["containers"][0]["command"]
@@ -121,6 +121,7 @@ def test_a_shared_store_volume_and_gpus_and_node_placement():
     assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == "1"
     assert pod["nodeSelector"] == {"pool": "hydrocouple", "accelerator": "a100"}
     assert pod["tolerations"] and pod["imagePullSecrets"] == [{"name": "mirror"}]
+    assert pod["containers"][0]["envFrom"] == [{"secretRef": {"name": "store-credentials"}}]
     with pytest.raises(ValueError):
         KubernetesConfig(namespace="hc", max_cpu=1, max_memory_gib=1, scratch_gib=1,
                          store_volume={"mount_path": "/x"})

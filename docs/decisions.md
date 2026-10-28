@@ -84,6 +84,18 @@ Authorization is evaluated for the human; limits are evaluated for the session. 
 
 **Decision.** Uploads, downloads and checksum verification are requested through the control plane and answered by the target's agent, using the site's own storage identity. The agent grants only keys under `revisions/` and `runs/`. A revision becomes `READY` only after the agent has verified every object's size and SHA-256. The runner verifies every input again before running.
 
+**Backends.** `file://` (local, or an NFS claim shared with runner pods), Amazon S3 and S3-compatible stores (`s3://`), Azure Blob Storage (`azure://`) and Google Cloud Storage (`gs://`).
+- Credentials come from the environment's workload identity, so nothing is stored.
+- Every backend writes create-if-absent when asked (`If-None-Match: *`, or `ifGenerationMatch=0` on Cloud Storage), and upload grants never replace an object.
+- S3 upload grants carry the expected SHA-256, which Amazon S3 enforces.
+
+**Checksums.** The SHA-256 a backend reports comes from the store only where the store verified it: whole-object uploads on Amazon S3. Everywhere else the agent reads the object:
+- multipart S3 uploads;
+- S3-compatible endpoints, which may keep a client's checksum unchecked;
+- Blob Storage and Cloud Storage, which keep no SHA-256.
+
+So the agent's verification never trusts a checksum the client supplied.
+
 ## 10. Studies are ask/tell; a pool is task jobs; a chunk is the evaluation lease
 
 **Decision.** A study is a registered evaluation function. It records:

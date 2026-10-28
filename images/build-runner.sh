@@ -46,7 +46,7 @@ for p in "${locals[@]}"; do
   "$out/build-venv/bin/pip" wheel -q --no-deps --wheel-dir "$ctx/wheelhouse" "$p"
 done
 "$out/build-venv/bin/pip" wheel -q --wheel-dir "$ctx/wheelhouse" --find-links "$ctx/wheelhouse" \
-  "${args[@]}" "$repo[runner,gym]"
+  "${args[@]}" "$repo[runner,gym,s3,azure,gcs]"
 
 docker build --build-arg BASE="$base" -t "$image:$tag" "$ctx"
 docker push "$image:$tag" >/dev/null

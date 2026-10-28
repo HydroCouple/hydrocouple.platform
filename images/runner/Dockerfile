@@ -1,5 +1,6 @@
 # The runner image for container targets: the hydrocouple_platform runner with the
-# OpenSWMM engine and the openswmm_gymnasium evaluator, installed from the wheelhouse
+# OpenSWMM engine, the openswmm_gymnasium evaluator and the S3, Azure Blob Storage and
+# Cloud Storage backends, installed from the wheelhouse
 # that images/build-runner.sh prepares. BASE must be pinned by digest and provide
 # Python 3.10 or later with venv, useradd, and the libraries the engine wheel links
 # (libgomp; libsqlite3 for an engine wheel not repaired with auditwheel). The official
@@ -9,7 +10,7 @@ FROM ${BASE}
 COPY wheelhouse/ /tmp/wheelhouse/
 RUN python3 -m venv /opt/hydrocouple \
  && /opt/hydrocouple/bin/pip install --no-cache-dir --no-index --find-links /tmp/wheelhouse \
-      "hydrocouple.platform[runner,gym]" \
+      "hydrocouple.platform[runner,gym,s3,azure,gcs]" \
  && rm -rf /tmp/wheelhouse \
  && /opt/hydrocouple/bin/python -c "import hydrocouple_platform.runner.gym, openswmm.engine, openswmm_gymnasium.optimize"
 # Runner pods run as this user, with a read-only root filesystem and /work as an emptyDir.

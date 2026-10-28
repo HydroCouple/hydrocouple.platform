@@ -16,7 +16,7 @@ The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decis
 | M2 Durable core | PostgreSQL schema and migration, shared services, HTTP API, client SDK, outbox, dispatcher, reconciler, agent with the local-pool adapter, agent sessions with budgets and approvals |
 | M3 Packaging and runners | `.inp` dependency packaging as a one-component composition, the `swmm.simulation@1` runner on the real engine, run and attempt manifests |
 | M3b Studies and evaluator pools | Ask/tell studies with fenced chunk leases, evaluator pool tasks (`gym.evaluate@1`) leasing through the agent's runner gateway, failed-candidate policies, lineage and the Pareto set; `hydrocouple_platform.gym.run_platform_study` drives `openswmm_gymnasium` optimizers on the platform |
-| M4 Kubernetes and the first BYOC slice | In progress: the Kubernetes adapter and signed runner images are done; object storage, install modules, deletion and the gate follow |
+| M4 Kubernetes and the first BYOC slice | In progress: the Kubernetes adapter, signed runner images and the S3, Blob Storage and Cloud Storage backends are done; install modules, deletion and the gate follow |
 | Next | MCP platform toolset (after the current `openswmm.mcp` work lands) |
 
 ## Layout
@@ -32,9 +32,11 @@ src/hydrocouple_platform/
   packaging/   builds immutable revisions from local model files
   client.py    PlatformClient for the GUI, CLI and MCP adapters
   gym.py       run_platform_study: openswmm_gymnasium optimizers driving a study
-  storage.py   object storage interface and the file:// store
+  storage/     object storage: file://, s3://, azure://, gs://
   workflows.py the registry of approved workflows
   schemas/     published JSON Schemas (platform) and HydroCoupleSDK copies
+images/        the runner image and its build, SBOM and signing script
+tests/k8s/     tests against a Kubernetes cluster (HCP_TEST_KUBECONFIG)
 ```
 
 ## Running it locally

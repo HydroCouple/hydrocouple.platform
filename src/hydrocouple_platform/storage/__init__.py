@@ -1,9 +1,17 @@
 """Object storage behind one interface, held by the agent and the runner.
 
-``LocalStore`` keeps objects as files under a root directory (``file://`` URIs).
-Cloud stores (S3, Blob Storage, Cloud Storage) implement the same interface;
-their grants are presigned URLs the agent mints with the organization's own
-identity.
+| Backend | URI | Module |
+| --- | --- | --- |
+| Files under a root directory | `file:///path` | here (`LocalStore`) |
+| Amazon S3 and S3-compatible stores | `s3://bucket/prefix` | `storage.s3` |
+| Azure Blob Storage | `azure://account/container/prefix` | `storage.azure` |
+| Google Cloud Storage | `gs://bucket/prefix` | `storage.gcs` |
+
+Every backend writes create-if-absent when asked, and reports each object's size
+and SHA-256 (from the store's own server-verified checksum where it keeps one,
+otherwise by reading the object). Grants are presigned URLs, minted with the
+site's own identity, and credentials come from the environment's workload
+identity: nothing is stored.
 """
 
 from __future__ import annotations
@@ -17,8 +25,8 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import quote, unquote, urlparse
 
-from .contracts.agent import Grant
-from .contracts.manifests import check_safe_path
+from ..contracts.agent import Grant
+from ..contracts.manifests import check_safe_path
 
 
 class ObjectExists(Exception):
@@ -31,7 +39,9 @@ class StorageBackend(Protocol):
     def stat(self, key: str) -> tuple[int, str] | None: ...
     def exists(self, key: str) -> bool: ...
     def delete(self, key: str) -> None: ...
-    def grant(self, key: str, method: str, expires_in: int) -> Grant: ...
+    # ``sha256``, when known, binds an upload grant to that content where the store can.
+    def grant(self, key: str, method: str, expires_in: int,
+              sha256: str | None = None) -> Grant: ...
 
 
 def sha256_file(path: Path) -> str:
@@ -40,6 +50,19 @@ def sha256_file(path: Path) -> str:
         for block in iter(lambda: fh.read(1 << 20), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def sha256_stream(blocks) -> str:
+    digest = hashlib.sha256()
+    for block in blocks:
+        digest.update(block)
+    return digest.hexdigest()
+
+
+def object_key(prefix: str, key: str) -> str:
+    """``key`` under a store's prefix, refusing keys that escape it."""
+    check_safe_path(key)
+    return f"{prefix}{key}"
 
 
 class LocalStore:
@@ -95,7 +118,8 @@ class LocalStore:
         if target.exists():
             target.unlink()
 
-    def grant(self, key: str, method: str, expires_in: int) -> Grant:
+    def grant(self, key: str, method: str, expires_in: int,
+              sha256: str | None = None) -> Grant:
         # Local grants are paths: they work only where the store's directory is
         # reachable, which is the local-pool deployment's premise.
         target = self.path(key)
@@ -124,6 +148,31 @@ def _create_if_absent(tmp: str, target: Path, key: str) -> None:
 
 
 def open_store(uri: str) -> StorageBackend:
-    if uri.startswith("file://"):
+    scheme = urlparse(uri).scheme
+    if scheme == "file":
         return LocalStore.from_uri(uri)
-    raise ValueError(f"no storage backend for {uri!r} in this release; file:// is supported")
+    if scheme == "s3":
+        from .s3 import S3Store
+
+        return S3Store.from_uri(uri)
+    if scheme == "azure":
+        from .azure import AzureBlobStore
+
+        return AzureBlobStore.from_uri(uri)
+    if scheme == "gs":
+        from .gcs import GCSStore
+
+        return GCSStore.from_uri(uri)
+    raise ValueError(f"no storage backend for {uri!r}; use file://, s3://, azure:// or gs://")
+
+
+def split_uri(uri: str, parts: int) -> tuple[list[str], str, dict[str, str]]:
+    """The leading path components of a cloud store URI, its key prefix, and its query."""
+    from urllib.parse import parse_qsl
+
+    parsed = urlparse(uri)
+    path = [parsed.netloc, *[p for p in unquote(parsed.path).split("/") if p]]
+    if len(path) < parts or not all(path[:parts]):
+        raise ValueError(f"{uri!r} must name {parts} location part(s) before the prefix")
+    rest = "/".join(path[parts:])
+    return path[:parts], (rest + "/" if rest else ""), dict(parse_qsl(parsed.query))

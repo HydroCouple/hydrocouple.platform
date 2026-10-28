@@ -339,7 +339,8 @@ class Agent:
                 continue
             try:
                 if request.mode == GrantMode.UPLOAD:
-                    grants.append(self.store.grant(obj.key, "PUT", request.expires_in_seconds))
+                    grants.append(self.store.grant(obj.key, "PUT", request.expires_in_seconds,
+                                                   sha256=obj.sha256))
                     continue
                 stat = self.store.stat(obj.key)
                 if stat is None:

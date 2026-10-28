@@ -52,12 +52,17 @@ agent = [
 runner = [
     "openswmm>=6.0.0a4.dev1",
 ]
+# Object storage backends, for the agent and the runner.
+s3 = ["boto3>=1.35"]
+azure = ["azure-storage-blob>=12.19", "azure-identity>=1.15"]
+gcs = ["google-cloud-storage>=2.16"]
 # The gym.evaluate@1 evaluator and the run_platform_study client driver.
 gym = [
     "openswmm.gymnasium[spec,platypus]>=0.1.0.dev0",
 ]
 dev = [
-    "hydrocouple.platform[server,agent,runner]",
+    "hydrocouple.platform[server,agent,runner,s3,azure,gcs]",
+    "moto[server]>=5",
     "pytest>=8.0",
     "ruff==0.15.14",
     # Embedded PostgreSQL for tests, where it publishes wheels.
