@@ -138,6 +138,30 @@ A task asking for a lease while it still holds a chunk gets that chunk again: th
 - Under the `fail` policy, chunks run in parallel, so a study can fail on a later chunk while earlier ones are still unevaluated. `run_platform_study` writes the records evaluated before the failure, as `run_study` does, and reports the rest as not evaluated, where `run_study` would have evaluated them.
 - Platypus draws from Python's `random`, which `run_study` does not seed. `run_platform_study` seeds it with the study's seed, so a same-seeded local comparison must seed it too.
 
+## 11. Images are pinned by digest, signed, and verified by the agent
+
+**Decision.** The control plane's workflow registry names each workflow's runner image by digest (`HCP_WORKFLOW_IMAGES`). A container target runs only workflows listed there.
+
+Before a container adapter starts an attempt, the agent:
+- rewrites the image to the site's registry mirror, when it has one, keeping the digest;
+- verifies the image's cosign signature against the public keys the site pins.
+
+An image no pinned key signed fails the attempt as `untrusted_image`, which is never retried. Nothing is started. An agent with no pinned keys runs no images, unless it was started explicitly with unsigned images allowed, for development clusters.
+
+The runner reads the image from its spec, so the attempt manifest's provenance names the digest that ran.
+
+**Images.** `images/build-runner.sh` builds the runner image from a wheelhouse, on a base pinned by digest, then:
+- pushes it;
+- writes an SPDX SBOM with syft;
+- signs the image with cosign and attaches the SBOM as a signed attestation.
+
+**Transparency log.** Signatures are checked against the pinned keys alone by default, because a private site may not reach a transparency log. `require_transparency_log` adds the check where the site can.
+
+**Rules out.**
+- Images by tag.
+- Images chosen by parameters.
+- Running an unverified image because verification was unavailable.
+
 ## Out of release 1
 
 - Checkpoint recovery for anything other than qualified single simulations. The engine's checkpoint session excludes callbacks, external drivers, live forcing, heat, quality and plugins, and composition `execution.mode: resume` is unimplemented.

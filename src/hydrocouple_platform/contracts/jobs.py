@@ -45,6 +45,8 @@ class FailureClass(str, Enum):
     TRANSFER = "transfer"
     TIMEOUT = "timeout"
     LOST = "lost"
+    # The image is not signed by a key the agent pins: never retried.
+    UNTRUSTED_IMAGE = "untrusted_image"
     UNKNOWN = "unknown"
 
 
@@ -61,6 +63,7 @@ FAILURE_RETRIES: dict[FailureClass, int] = {
     FailureClass.TRANSFER: 1_000,
     FailureClass.TIMEOUT: 0,
     FailureClass.LOST: 1_000,
+    FailureClass.UNTRUSTED_IMAGE: 0,
     FailureClass.UNKNOWN: 1,
 }
 

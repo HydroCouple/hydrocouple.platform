@@ -53,7 +53,8 @@ STUCK_REASONS = {
 
 
 class StoreVolume(BaseModel):
-    """A ``file://`` store on a shared volume, mounted at the same path in every runner."""
+    """The agent's ``file://`` store on a shared volume (an NFS claim on premises), which
+    runners mount at ``mount_path`` and use as ``file://<mount_path>``."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -177,6 +178,7 @@ def build_job(cfg: KubernetesConfig, lease: LeaseGrant, store_uri: str,
                                               "defaultMode": 0o440}}]
     if cfg.store_volume is not None:
         sv = cfg.store_volume
+        store_uri = "file://" + sv.mount_path  # the agent's store, as runners see it
         mounts.append({"name": "store", "mountPath": sv.mount_path})
         volumes.append({"name": "store", **(
             {"persistentVolumeClaim": {"claimName": sv.claim_name}} if sv.claim_name else

@@ -145,7 +145,9 @@ class RunServices(ServiceBase):
             project_id=project.id, actor=actor,
             workload=Workload(workflow=workflow.name, workflow_version=workflow.version,
                               parameters=parameters),
-            runtime=Runtime(image=workflow.images.get("default"), threads=threads),
+            runtime=Runtime(image=self.settings.workflow_images.get(
+                f"{workflow.name}@{workflow.version}", workflow.images.get("default")),
+                threads=threads),
             inputs=Inputs(
                 revision_id=revision.id, manifest_sha256=revision.manifest_sha256,
                 storage_prefix=revision.storage_prefix,

@@ -54,6 +54,7 @@ from ..storage import StorageBackend
 from .adapters import Observation, SchedulerAdapter
 from .egress import SUMMARY_LIMIT, filter_diagnostics, filter_event
 from .gateway import RunnerGateway
+from .imagetrust import ImageVerifier, UntrustedImage
 
 log = logging.getLogger(__name__)
 MAX_BUFFERED_EVENTS = 10_000
@@ -133,7 +134,8 @@ class Agent:
     def __init__(self, client: AgentClient, adapter: SchedulerAdapter, store: StorageBackend,
                  store_uri: str, egress: EgressPolicy, instance: str | None = None,
                  gateway_host: str = "127.0.0.1", gateway_port: int = 0,
-                 gateway_url: str | None = None):
+                 gateway_url: str | None = None, images: ImageVerifier | None = None,
+                 allow_unsigned_images: bool = False):
         self.client, self.adapter, self.store = client, adapter, store
         self.store_uri, self.egress = store_uri, egress
         self.instance = instance or f"{socket.gethostname()}-{os.getpid()}"
@@ -143,6 +145,9 @@ class Agent:
         # Where the gateway listens, and the address runners use (a Service on Kubernetes).
         self.gateway_host, self.gateway_port, self.gateway_url = (
             gateway_host, gateway_port, gateway_url)
+        # Container images run only when a pinned key signed them, unless this agent was
+        # explicitly started without image trust (development clusters).
+        self.images, self.allow_unsigned_images = images, allow_unsigned_images
         # Adapters whose work outlives the agent (Kubernetes) are asked for it at start.
         self._adopted = not hasattr(adapter, "adopt")
         self.heartbeat_interval = 15.0
@@ -210,6 +215,12 @@ class Agent:
         if lease.attempt_id in self.held:
             return
         try:
+            lease = self._trusted(lease)
+        except UntrustedImage as exc:
+            log.error("refusing attempt %s: %s", lease.attempt_id, exc)
+            self._refuse(lease, FailureClass.UNTRUSTED_IMAGE, str(exc))
+            return
+        try:
             extra = self._runner_env(lease)
             # Only evaluator tasks get the gateway; other submits keep the plain call.
             handle = (self.adapter.submit(lease, self.store_uri, env=extra[0], secrets=extra[1])
@@ -219,16 +230,31 @@ class Agent:
                 self.gateway.unregister(lease.attempt_id)
             # Report it at once so the job is retried now, not after the lease expires.
             log.exception("could not start attempt %s", lease.attempt_id)
-            self.held[lease.attempt_id] = _Held(
-                lease=lease, handle=None, token=lease.attempt_token,
-                state=AttemptState.FINALIZING,
-                final=AttemptResult(
-                    attempt_id=lease.attempt_id, fencing_token=lease.fencing_token,
-                    outcome=AttemptOutcome.FAILED, failure_class=FailureClass.CAPACITY,
-                    diagnostics=filter_diagnostics(
-                        {"message": f"the scheduler could not start it: {exc}"}, self.egress)))
+            self._refuse(lease, FailureClass.CAPACITY, f"the scheduler could not start it: {exc}")
             return
         self.held[lease.attempt_id] = _Held(lease=lease, handle=handle, token=lease.attempt_token)
+
+    def _refuse(self, lease: LeaseGrant, failure: FailureClass, message: str) -> None:
+        """Hold an attempt that never started, so the next report fails it at once."""
+        self.held[lease.attempt_id] = _Held(
+            lease=lease, handle=None, token=lease.attempt_token, state=AttemptState.FINALIZING,
+            final=AttemptResult(
+                attempt_id=lease.attempt_id, fencing_token=lease.fencing_token,
+                outcome=AttemptOutcome.FAILED, failure_class=failure,
+                diagnostics=filter_diagnostics({"message": message}, self.egress)))
+
+    def _trusted(self, lease: LeaseGrant) -> LeaseGrant:
+        """The lease with its image as this site will run it: by digest, from the site's
+        mirror, and signed by a pinned key. Adapters that run no images are unaffected."""
+        if not self.adapter.capabilities().runs_images:
+            return lease
+        if self.images is None:
+            if self.allow_unsigned_images:
+                return lease
+            raise UntrustedImage("this agent pins no image keys, so it runs no images")
+        image = self.images.resolve(lease.spec.runtime.image)
+        runtime = lease.spec.runtime.model_copy(update={"image": image})
+        return lease.model_copy(update={"spec": lease.spec.model_copy(update={"runtime": runtime})})
 
     def _adopt(self) -> None:
         """Hold again the attempts an earlier instance of this agent left running. The poll

@@ -112,8 +112,10 @@ def test_a_shared_store_volume_and_gpus_and_node_placement():
         gpus={"a100": {"node_selector": {"accelerator": "a100"}}},
         node_selector={"pool": "hydrocouple"}, tolerations=[{"key": "spot", "operator": "Exists"}],
         image_pull_secrets=["mirror"])
-    pod = build_job(cfg, lease(gpu="a100"), "file:///data/store", None, False)[
+    pod = build_job(cfg, lease(gpu="a100"), "file:///srv/agent/store", None, False)[
         "spec"]["template"]["spec"]
+    command = pod["containers"][0]["command"]
+    assert command[command.index("--store") + 1] == "file:///data/store"  # as runners see it
     assert {"name": "store", "persistentVolumeClaim": {"claimName": "hc-store"}} in pod["volumes"]
     assert {"name": "store", "mountPath": "/data/store"} in pod["containers"][0]["volumeMounts"]
     assert pod["containers"][0]["resources"]["limits"]["nvidia.com/gpu"] == "1"
