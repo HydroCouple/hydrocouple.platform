@@ -1,0 +1,54 @@
+#!/bin/sh
+# Stands in for the runner in the adapter contract tests (tests/contract). Every adapter
+# starts "python -m hydrocouple_platform.runner --spec ... --workdir ...", and this does
+# what HCP_TEST_BEHAVIOR says instead of running a workflow.
+event() {
+  printf 'HCP-EVENT {"event_id": "%s", "sequence": %s, "kind": "%s", "phase": "%s", "message": "%s", "occurred_at": "%s"}\n' \
+    "$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n')" "$1" "$2" "$3" "$4" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+spec="" workdir=/work
+prev=""
+for arg in "$@"; do
+  case "$prev" in
+    --spec) spec="$arg" ;;
+    --workdir) workdir="$arg" ;;
+  esac
+  prev="$arg"
+done
+event 0 lifecycle started "contract runner: ${HCP_TEST_BEHAVIOR:-ok}"
+case "${HCP_TEST_BEHAVIOR:-ok}" in
+  ok)
+    event 1 progress running "half way"
+    exit 0 ;;
+  exit:*)
+    echo "the runner failed: a line for the failure tail" >&2
+    exit "${HCP_TEST_BEHAVIOR#exit:}" ;;
+  sleep)
+    # Ready once TERM is handled, so a case can stop it knowing it exits as a runner does.
+    trap 'event 2 lifecycle failed "stopped"; exit 14' TERM
+    event 1 progress ready "waiting to be stopped"
+    while :; do sleep 1; done ;;
+  oom)
+    head -c 4294967296 /dev/zero | tail > /dev/null ;;
+  inspect)
+    # What the runner can see: its arguments, secrets, spec, environment and identity.
+    if [ -n "${HCP_RUNNER_SECRETS_FILE:-}" ]; then
+      secrets="$(cat "$HCP_RUNNER_SECRETS_FILE")"
+    elif [ -n "${HCP_RUNNER_SECRETS_STDIN:-}" ]; then
+      secrets="$(cat)"
+    fi
+    # On stderr, which every adapter keeps for a run's diagnostics.
+    {
+      echo "args: $*"
+      echo "secrets: ${secrets:-}"
+      echo "spec-readable: $(test -r "$spec" && echo yes || echo no)"
+      echo "lease-visible: $(test -e "$(dirname "$spec")/lease.json" && echo yes || echo no)"
+      echo "sa-token: $(test -e /var/run/secrets/kubernetes.io/serviceaccount/token && echo yes || echo no)"
+      echo "uid: $(id -u)"
+      echo "root-writable: $(touch /x 2>/dev/null && rm -f /x && echo yes || echo no)"
+      echo "work-writable: $(touch "$workdir/x" 2>/dev/null && echo yes || echo no)"
+      env | grep '^HCP_' | sed 's/^/env: /'
+    } >&2
+    exit 0 ;;
+esac
+exit 1

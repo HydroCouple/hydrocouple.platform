@@ -25,4 +25,9 @@ First implementation of the cloud execution plan (milestones M1 to M3).
   - `hcp agent --config` (agent.json), `--verify` (including a runner pod) and `--dry-run`, and `hcp target register`.
 - Run and study deletion (M4): asynchronous erasure by the target's agent once every attempt is confirmed stopped, with a second pass for late writes, `BLOCKED` with a reason when it cannot be confirmed, shared revisions kept, and the run kept as a tombstone. Migration `0003`.
 - The M4 gate (`tests/k8s/test_install_on_kubernetes.py`), through the HTTP API against the agent as installed: upload, run, disconnect with the agent pod restarted mid-run, reconnect, inspect, approve and delete; a study on an evaluator pool; numerical parity with a local pool; and revocation draining. It passes on k3s. `deploy/gate` has the runbooks and `run-gate.sh` for running it on EKS, AKS and GKE.
+- The shared adapter contract (M5): `tests/contract` runs one set of cases against every scheduler adapter through a harness per adapter, starting with the local pool and Kubernetes. It adds a runner stopped from outside the agent (an eviction on Kubernetes), which must be reported as an interruption. That case found that the Kubernetes adapter reported an evicted pod deleted before it looked as an unknown failure; the Job's pod failure policy reason now says it was an interruption.
+- Admission for serverless services (M5):
+  - where scratch is held in memory, the request's memory includes it;
+  - a service that offers only fixed CPU and memory pairs (`task_sizes`) runs a request on the smallest that fits, and refuses it when none does;
+  - an adapter that hasn't declared where scratch lives, or caps runtime without saying how long, rejects the requests that depend on it.
 - Runners inherit none of the agent's `HCP_*` settings, so they never hold the agent credential; the evaluator's gateway token reaches it on stdin.

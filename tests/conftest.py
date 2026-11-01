@@ -180,10 +180,10 @@ def server(settings, services):
     thread.join(timeout=10)
 
 
-# -- Kubernetes (tests/k8s) ------------------------------------------------------------------
+# -- Kubernetes (tests/k8s, tests/contract) -------------------------------------------------
 #
 # Set HCP_TEST_KUBECONFIG to a cluster's kubeconfig. The adapter contract tests also need
-# HCP_TEST_K8S_CONTRACT_IMAGE: the stand-in runner built from tests/k8s/contract-runner, by
+# HCP_TEST_K8S_CONTRACT_IMAGE: the stand-in runner built from tests/contract/contract-runner, by
 # digest, in a registry the cluster can pull from. Each test module gets its own namespace,
 # labelled for the "restricted" Pod Security Standard, and deletes it afterwards.
 

@@ -101,6 +101,7 @@ pytest -m "not engine"                   # skip tests that run the real Solver
 
 - **PostgreSQL tests** need a server. Set `HCP_TEST_DATABASE_URL`, or set `HCP_TEST_PG_BIN` to a folder containing `initdb` and `pg_ctl`; with neither set, the `pgserver` package's binaries are used where it has wheels (macOS arm64, Linux x86_64). Each test gets its own database cloned from a migrated template.
 - **Engine tests** run the real `openswmm` Solver and skip when the installed engine cannot run on this CPU. The study engine tests also need `openswmm_gymnasium` (and `platypus-opt` for NSGA-II) and skip without it.
+- **The adapter contract** (`tests/contract`) runs the same cases against every scheduler adapter: the local pool always, Kubernetes with a cluster. A new adapter adds a harness in `tests/contract/harnesses.py`.
 - **Kubernetes tests** (`-m k8s`) need a cluster (`HCP_TEST_KUBECONFIG`) and signed images; each module's docstring lists its settings. `tests/k8s/test_install_on_kubernetes.py` is the M4 gate, and `deploy/gate/README.md` runs it on EKS, AKS and GKE.
 - Files a test produces are kept under `test_artifacts/<module>/<test>/` for review.
 

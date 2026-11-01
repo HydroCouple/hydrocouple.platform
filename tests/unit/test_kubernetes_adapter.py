@@ -1,6 +1,6 @@
 """The Kubernetes adapter without a cluster: the manifests it writes and how it reads status.
 
-``tests/k8s/test_kubernetes_contract.py`` runs the same adapter against a real cluster.
+``tests/contract`` runs the same adapter against a real cluster, in the shared adapter contract.
 """
 
 from __future__ import annotations
@@ -194,6 +194,9 @@ def test_outcomes_the_scheduler_evidences():
          [_pod("Failed", terminated=NS(exit_code=143, reason="Error"),
                conditions=[("DisruptionTarget", "True")])],
          dict(failure_class=FailureClass.INTERRUPTED)),
+        # Found by the contract suite: an evicted pod is often gone before the agent looks,
+        # and then only the Job says the disruption rule failed it.
+        (_job([("Failed", "PodFailurePolicy")]), [], dict(failure_class=FailureClass.INTERRUPTED)),
         (_job([("Failed", "BackoffLimitExceeded")]),
          [_pod("Failed", terminated=NS(exit_code=12, reason="Error"))],
          dict(exit_code=12, failure_class=None)),

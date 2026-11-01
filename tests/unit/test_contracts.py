@@ -8,7 +8,7 @@ import pytest
 
 from hydrocouple_platform.agent.egress import filter_diagnostics, filter_event
 from hydrocouple_platform.contracts.agent import Event, EventKind
-from hydrocouple_platform.contracts.capabilities import check_spec
+from hydrocouple_platform.contracts.capabilities import TaskSize, check_spec, fit_task_size
 from hydrocouple_platform.contracts.jobs import (
     Actor,
     EgressPolicy,
@@ -96,6 +96,69 @@ class TestCapabilities:
                                  has_runtime_cap=True, max_task_seconds=3600)
         found = check_spec(cap, spec(limits=Limits(estimated_runtime_seconds=7200)))
         assert any("exceeds the 3600 s task cap" in f for f in found)
+
+    def test_scratch_held_in_memory_counts_against_memory(self):
+        """Plan §4, serverless rule 2: on Cloud Run the filesystem is memory."""
+        cap = local_capabilities(adapter="cloud-run-jobs", family="serverless",
+                                 max_memory_gib=4, scratch_gib=None, scratch_in_memory=True)
+        found = check_spec(cap, spec(resources=Resources(memory_gib=2, scratch_gib=3)))
+        assert found == ["requested memory (GiB) 5 (2 and 3 GiB of scratch held in memory) "
+                         "exceeds cloud-run-jobs limit 4"]
+        assert check_spec(cap, spec(resources=Resources(memory_gib=2, scratch_gib=1))) == []
+
+    def test_a_service_with_fixed_task_sizes_needs_one_that_fits(self):
+        """Fargate offers set CPU and memory pairs, not any combination up to the maxima."""
+        sizes = [{"cpu": 0.25, "memory_gib": 0.5}, {"cpu": 1, "memory_gib": 2},
+                 {"cpu": 4, "memory_gib": 8}]
+        cap = local_capabilities(adapter="ecs-fargate", family="serverless", max_cpu=4,
+                                 max_memory_gib=8, task_sizes=sizes)
+        # A request runs on the smallest size with enough of both, so these fit.
+        for cpu, memory in ((0.5, 2), (0.25, 4), (4, 8)):
+            assert check_spec(cap, spec(resources=Resources(cpu=cpu, memory_gib=memory))) == []
+        found = check_spec(cap, spec(resources=Resources(cpu=2, memory_gib=6, scratch_gib=1)))
+        assert found == []
+        cap = cap.model_copy(update={"max_memory_gib": 16})
+        found = check_spec(cap, spec(resources=Resources(cpu=1, memory_gib=12)))
+        assert found == ["no ecs-fargate task size has 1 CPU and 12 GiB of memory; "
+                         "its sizes go up to 4 CPU and up to 8 GiB"]
+
+    def test_in_memory_scratch_and_task_sizes_together(self):
+        sizes = [{"cpu": 1, "memory_gib": 2}, {"cpu": 2, "memory_gib": 4}]
+        cap = local_capabilities(adapter="cloud-run-jobs", family="serverless", max_cpu=2,
+                                 max_memory_gib=4, scratch_gib=None, scratch_in_memory=True,
+                                 task_sizes=sizes)
+        res = Resources(cpu=1, memory_gib=2, scratch_gib=1)  # 3 GiB in all: the 2 CPU size
+        assert check_spec(cap, spec(resources=res)) == []
+        assert fit_task_size(cap, res) == TaskSize(cpu=2, memory_gib=4)
+        assert fit_task_size(cap, Resources(cpu=0.5, memory_gib=1, scratch_gib=0)) == \
+            TaskSize(cpu=1, memory_gib=2)
+
+    def test_the_closest_miss_names_the_most_of_each(self):
+        sizes = [{"cpu": 4, "memory_gib": 30}, {"cpu": 8, "memory_gib": 16}]
+        cap = local_capabilities(adapter="ecs-fargate", family="serverless", max_cpu=8,
+                                 max_memory_gib=40, task_sizes=sizes)
+        found = check_spec(cap, spec(resources=Resources(cpu=1, memory_gib=35)))
+        assert found == ["no ecs-fargate task size has 1 CPU and 35 GiB of memory; its sizes "
+                         "go up to 8 CPU and up to 30 GiB"]
+
+    def test_task_sizes_are_within_the_maxima_and_never_empty(self):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="at least 1 item"):
+            local_capabilities(task_sizes=[])
+        with pytest.raises(ValidationError, match="beyond max_cpu or max_memory_gib"):
+            local_capabilities(max_cpu=2, task_sizes=[{"cpu": 4, "memory_gib": 8}])
+
+    def test_unknown_scratch_placement_rejects_requests_with_scratch(self):
+        cap = local_capabilities(scratch_in_memory=None)
+        assert "has not declared whether scratch is held in memory" in " | ".join(
+            check_spec(cap, spec()))
+        assert check_spec(cap, spec(resources=Resources(scratch_gib=0))) == []
+
+    def test_a_runtime_cap_of_unknown_length_rejects(self):
+        cap = local_capabilities(has_runtime_cap=True, max_task_seconds=None)
+        assert any("caps task runtime but has not declared how long" in f
+                   for f in check_spec(cap, spec()))
 
     def test_unknown_capabilities_reject(self):
         cap = local_capabilities(has_runtime_cap=None, max_memory_gib=None, provider_retries=None)

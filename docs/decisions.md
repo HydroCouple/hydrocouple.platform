@@ -18,6 +18,10 @@ These records implement the cloud execution plan revised on October 15, 2026 (sc
 
 **Status.** The local-pool and Kubernetes adapters are implemented (M4). The managed Batch, serverless container job and SLURM adapters follow by demand (M5).
 
+**One contract suite.** `tests/contract` holds the adapter contract as cases, and each adapter supplies a harness that makes it, leases for it and reads back what its scheduler kept. A case an adapter isn't held to is skipped by name: the local pool, for example, enforces no memory limit and runs no images. So an adapter passes the same cases as every other, or the suite says which it doesn't claim.
+
+**Serverless sizes.** Where scratch is held in memory (`scratch_in_memory`), a request's memory includes its scratch. A service that offers only fixed CPU and memory pairs (`task_sizes`, as Fargate does) runs a request on the smallest pair with enough of both (`fit_task_size`), and refuses it if none has. Every pair lies within the adapter's maxima. As with every flag, an unknown value rejects what depends on it: scratch on a service that hasn't said whether scratch is memory, and any runtime on a service that caps it without saying how long.
+
 **Kubernetes.** Each attempt is one `batch/v1` Job:
 - `backoffLimit: 0`, and a pod failure policy that fails the Job on an eviction or preemption, which is reported as an interruption.
 - The attempt's execution timeout is the Job's `activeDeadlineSeconds`.

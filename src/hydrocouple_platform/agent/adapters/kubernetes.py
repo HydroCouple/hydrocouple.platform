@@ -521,8 +521,10 @@ class KubernetesAdapter:
                              provider_reference=reference)
         terminated = _terminated(pod)
         failure = None
-        if pod is not None and (_has_condition(pod, "DisruptionTarget")
-                                or pod.status.reason == "Evicted"):
+        # The Job's only pod failure policy rule fails it on a disruption. An evicted pod is
+        # often deleted before the agent looks, and then only the Job's reason says so.
+        if condition.reason == "PodFailurePolicy" or (pod is not None and (
+                _has_condition(pod, "DisruptionTarget") or pod.status.reason == "Evicted")):
             failure = FailureClass.INTERRUPTED
         elif terminated is not None and terminated.reason == "OOMKilled":
             failure = FailureClass.OUT_OF_MEMORY
