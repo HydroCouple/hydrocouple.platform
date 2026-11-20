@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import platform as _platform
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
@@ -58,10 +59,17 @@ def package_swmm_model(
     inp_path: str | Path,
     staging_dir: str | Path,
     *,
+    extra_files: Mapping[str, str | Path] | None = None,
     max_files: int = 5000,
     max_bytes: int = 20 * 1024**3,
 ) -> Package:
-    """Package one SWMM model as a one-component HydroCouple composition."""
+    """Package one SWMM model as a one-component HydroCouple composition.
+
+    ``extra_files`` maps a path relative to the model folder (``data/observed.csv``) to a
+    local file the model does not reference itself, such as observations a study compares
+    with or an event's rain series. Each is packaged at that path inside ``model/`` with the
+    role ``sidecar``, hashed like every input and verified by the runner.
+    """
     inp_path = Path(inp_path).resolve()
     model_dir = inp_path.parent
     staging = Path(staging_dir).resolve()
@@ -118,6 +126,23 @@ def package_swmm_model(
         sources[package_path] = real
         roles[package_path] = (FileRole.INPUT, ref.text)
         replacements.append((ref, rel + decorator))
+
+    for rel, local in (extra_files or {}).items():
+        package_path = f"{MODEL_DIR}/{PurePosixPath(rel).as_posix()}"
+        source = Path(local).resolve()
+        try:
+            check_safe_path(package_path)
+        except ValueError as exc:
+            problems.append(f"extra file {rel!r}: {exc}")
+            continue
+        if package_path == f"{MODEL_DIR}/model.inp" or package_path in sources:
+            problems.append(f"extra file {rel!r} would replace a file the model references")
+            continue
+        if not source.is_file():
+            problems.append(f"extra file {rel!r}: {local} does not exist")
+            continue
+        sources[package_path] = source
+        roles[package_path] = (FileRole.SIDECAR, str(local))
 
     if problems:
         raise PackagingError(problems)
