@@ -163,7 +163,7 @@ A task asking for a lease while it still holds a chunk gets that chunk again: th
 - Every lease and completion for one study takes the study's row lock. That is measured fine for a few tasks: 1,000 twin-tank evaluations on three tasks took about a minute. Pools of hundreds of tasks will need the lock narrowed.
 - A pool's size is not checked against the target's capacity. Tasks beyond it wait in the queue.
 - Under the `fail` policy, chunks run in parallel, so a study can fail on a later chunk while earlier ones are still unevaluated. `run_platform_study` writes the records evaluated before the failure, as `run_study` does, and reports the rest as not evaluated, where `run_study` would have evaluated them.
-- Platypus draws from Python's `random`, which `run_study` does not seed. `run_platform_study` seeds it with the study's seed, so a same-seeded local comparison must seed it too.
+- Platypus draws from Python's process-wide `random`. `run_platform_study` seeds it with the study's seed, and `openswmm_gymnasium` now seeds it too when it builds a Platypus optimizer (November 20, 2026), so a same-seeded `run_study` needs no seeding of its own. Two studies running at once in one process share the generator and do not repeat.
 
 ## 11. Images are pinned by digest, signed, and verified by the agent
 
