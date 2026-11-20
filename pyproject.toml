@@ -58,7 +58,8 @@ azure = ["azure-storage-blob>=12.19", "azure-identity>=1.15"]
 gcs = ["google-cloud-storage>=2.16"]
 # The gym.evaluate@1 evaluator and the run_platform_study client driver.
 gym = [
-    "openswmm.gymnasium[spec,platypus]>=0.1.0.dev0",
+    # 0.1.0.dev1: the study manifest (optimize.manifest) run_platform_study writes.
+    "openswmm.gymnasium[spec,platypus]>=0.1.0.dev1",
 ]
 dev = [
     "hydrocouple.platform[server,agent,runner,s3,azure,gcs]",
