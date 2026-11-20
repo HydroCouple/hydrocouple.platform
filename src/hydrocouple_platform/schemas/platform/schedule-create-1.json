@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "Pace": {
+      "enum": [
+        "replay",
+        "wall_clock"
+      ],
+      "title": "Pace",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/schedule-create-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "await_decisions": {
+      "default": false,
+      "description": "Submit a cycle only once every proposal is decided",
+      "title": "Await Decisions",
+      "type": "boolean"
+    },
+    "cycle_minutes": {
+      "exclusiveMinimum": 0,
+      "maximum": 10080,
+      "title": "Cycle Minutes",
+      "type": "number"
+    },
+    "cycles": {
+      "anyOf": [
+        {
+          "maximum": 100000,
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "How many cycles; none for no end",
+      "title": "Cycles"
+    },
+    "estimated_runtime_seconds": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Estimated Runtime Seconds"
+    },
+    "first_cycle_end": {
+      "description": "The first cycle's end, wall clock, no zone",
+      "format": "date-time",
+      "title": "First Cycle End",
+      "type": "string"
+    },
+    "lag_seconds": {
+      "default": 0,
+      "maximum": 86400,
+      "minimum": 0,
+      "title": "Lag Seconds",
+      "type": "number"
+    },
+    "pace": {
+      "$ref": "#/$defs/Pace",
+      "default": "replay"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "description": "The workflow's parameters for every cycle, without cycle_end, which the schedule sets",
+      "title": "Parameters",
+      "type": "object"
+    },
+    "profile": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Profile"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "resume_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "A published run the first cycle continues from",
+      "title": "Resume From"
+    },
+    "retry_budget": {
+      "anyOf": [
+        {
+          "maximum": 10,
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Retry Budget"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "tool_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Call Id"
+    },
+    "workflow": {
+      "title": "Workflow",
+      "type": "string"
+    },
+    "workflow_version": {
+      "title": "Workflow Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "project_id",
+    "revision_id",
+    "target_id",
+    "workflow",
+    "workflow_version",
+    "first_cycle_end",
+    "cycle_minutes"
+  ],
+  "title": "ScheduleCreate",
+  "type": "object"
+}

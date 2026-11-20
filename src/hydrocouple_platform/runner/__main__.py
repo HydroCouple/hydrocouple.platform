@@ -17,7 +17,8 @@ from .core import Context, Events, install_signal_handlers, load_composition, pi
 from .core import stage_inputs as _stage
 
 HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm",
-            "gym.evaluate": "hydrocouple_platform.runner.gym"}
+            "gym.evaluate": "hydrocouple_platform.runner.gym",
+            "twin.cycle": "hydrocouple_platform.runner.twin"}
 
 
 def main(argv: list[str] | None = None) -> int:

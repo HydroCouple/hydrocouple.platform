@@ -100,6 +100,19 @@ class InputFile(_Model):
     size: int = Field(ge=0)
 
 
+class ArtifactInput(_Model):
+    """A file another run published, staged as an input: a twin cycle's previous state."""
+
+    role: Literal["resume"] = "resume"
+    path: str = Field(description="Where the runner stages it, relative to its inputs")
+    key: str = Field(description="Its object key in the target's storage")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+    run_id: str
+    attempt_id: str
+    source_path: str = Field(description="Its path among that attempt's artifacts")
+
+
 class Inputs(_Model):
     revision_id: str
     manifest_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -107,6 +120,8 @@ class Inputs(_Model):
     composition: str = "composition.json"
     # Every file of the revision; the runner checks each one before running.
     files: list[InputFile] = Field(min_length=1)
+    # Files of earlier runs, checked the same way (a resumed run's saved state).
+    artifacts: list[ArtifactInput] = Field(default_factory=list)
 
 
 class Resources(_Model):

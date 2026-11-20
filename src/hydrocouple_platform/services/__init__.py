@@ -11,11 +11,12 @@ from .catalog import CatalogServices
 from .deletions import DeletionServices
 from .revisions import RevisionServices
 from .runs import RunServices
+from .schedules import ScheduleServices
 from .studies import StudyServices
 
 
 class PlatformServices(CatalogServices, RevisionServices, RunServices, StudyServices,
-                       DeletionServices, AgentServices):
+                       ScheduleServices, DeletionServices, AgentServices):
     """All platform operations behind one interface."""
 
 

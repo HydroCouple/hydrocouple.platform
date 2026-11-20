@@ -130,7 +130,9 @@
         "log",
         "summary",
         "evaluations",
-        "other"
+        "other",
+        "state",
+        "forecast"
       ],
       "title": "ArtifactKind",
       "type": "string"
@@ -182,6 +184,18 @@
           "default": "hydrocouple.platform/provenance/1",
           "title": "Profile",
           "type": "string"
+        },
+        "resumed_from": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResumedFrom"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The saved state of an earlier run this attempt resumed from"
         },
         "revision_id": {
           "title": "Revision Id",
@@ -243,6 +257,37 @@
         "finished_at"
       ],
       "title": "Provenance",
+      "type": "object"
+    },
+    "ResumedFrom": {
+      "additionalProperties": false,
+      "description": "The saved state an attempt resumed from: an artifact of an earlier run's attempt.",
+      "properties": {
+        "attempt_id": {
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        }
+      },
+      "required": [
+        "run_id",
+        "attempt_id",
+        "path",
+        "sha256"
+      ],
+      "title": "ResumedFrom",
       "type": "object"
     },
     "RuntimeVersions": {

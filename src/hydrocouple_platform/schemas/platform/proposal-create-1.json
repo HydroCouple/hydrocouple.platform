@@ -1,0 +1,57 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/proposal-create-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A setpoint an agent or a person proposes for a schedule's model.",
+  "properties": {
+    "effective_from": {
+      "description": "Wall clock, no zone",
+      "format": "date-time",
+      "title": "Effective From",
+      "type": "string"
+    },
+    "link": {
+      "minLength": 1,
+      "title": "Link",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "tool_call_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Call Id"
+    },
+    "value": {
+      "maximum": 1,
+      "minimum": 0,
+      "title": "Value",
+      "type": "number"
+    }
+  },
+  "required": [
+    "link",
+    "value",
+    "effective_from"
+  ],
+  "title": "ProposalCreate",
+  "type": "object"
+}

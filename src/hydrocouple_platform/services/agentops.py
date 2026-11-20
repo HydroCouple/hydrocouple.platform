@@ -584,4 +584,5 @@ class AgentServices(ServiceBase):
                 counts["grants_expired"] += 1
         counts.update(self.reconcile_studies(limit))  # type: ignore[attr-defined]
         counts.update(self.reconcile_deletions(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_schedules(limit))  # type: ignore[attr-defined]
         return counts

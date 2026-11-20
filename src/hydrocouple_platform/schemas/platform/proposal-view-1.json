@@ -1,0 +1,174 @@
+{
+  "$defs": {
+    "ProposalState": {
+      "enum": [
+        "PROPOSED",
+        "APPROVED",
+        "REJECTED",
+        "SUPERSEDED",
+        "APPLIED"
+      ],
+      "title": "ProposalState",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/proposal-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "applied_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Model time it took effect",
+      "title": "Applied At"
+    },
+    "applied_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Applied Run Id"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "decided_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Decided At"
+    },
+    "decided_by": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The person who decided it",
+      "title": "Decided By"
+    },
+    "decision_note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Decision Note"
+    },
+    "effective_from": {
+      "format": "date-time",
+      "title": "Effective From",
+      "type": "string"
+    },
+    "issued_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The cycle end its forecast was issued at",
+      "title": "Issued At"
+    },
+    "link": {
+      "title": "Link",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Note"
+    },
+    "property": {
+      "title": "Property",
+      "type": "string"
+    },
+    "proposal_id": {
+      "title": "Proposal Id",
+      "type": "string"
+    },
+    "proposed_by": {
+      "additionalProperties": true,
+      "title": "Proposed By",
+      "type": "object"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The cycle whose forecast proposed it",
+      "title": "Run Id"
+    },
+    "schedule_id": {
+      "title": "Schedule Id",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/ProposalState"
+    },
+    "value": {
+      "title": "Value",
+      "type": "number"
+    }
+  },
+  "required": [
+    "proposal_id",
+    "schedule_id",
+    "state",
+    "link",
+    "property",
+    "value",
+    "effective_from",
+    "issued_at",
+    "run_id",
+    "proposed_by",
+    "note",
+    "decided_by",
+    "decided_at",
+    "decision_note",
+    "applied_run_id",
+    "applied_at",
+    "created_at"
+  ],
+  "title": "ProposalView",
+  "type": "object"
+}

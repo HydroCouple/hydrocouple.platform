@@ -18,6 +18,7 @@ import httpx
 
 from .contracts.errors import ErrorBody, ErrorCode, PlatformError
 from .contracts.requests import RunRequest
+from .contracts.schedules import ProposalCreate, ScheduleCreate
 from .contracts.studies import StudyCreate
 
 
@@ -266,6 +267,33 @@ class PlatformClient:
 
     def study_manifest(self, study_id: str) -> dict:
         return self._call("GET", f"/v1/studies/{study_id}/manifest")
+
+    def create_schedule(self, request: ScheduleCreate | dict,
+                        idempotency_key: str | None = None) -> dict:
+        """Register a schedule. Retrying with the same key returns the same schedule."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", "/v1/schedules", json=_dump(request),
+                          headers={"Idempotency-Key": key})
+
+    def schedule(self, schedule_id: str) -> dict:
+        return self._call("GET", f"/v1/schedules/{schedule_id}")
+
+    def pause_schedule(self, schedule_id: str) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/pause")
+
+    def resume_schedule(self, schedule_id: str) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/resume")
+
+    def proposals(self, schedule_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/schedules/{schedule_id}/proposals")
+
+    def propose_setpoint(self, schedule_id: str, proposal: ProposalCreate | dict) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/proposals",
+                          json=_dump(proposal))
+
+    def decide_proposal(self, proposal_id: str, approve: bool, note: str | None = None) -> dict:
+        return self._call("POST", f"/v1/proposals/{proposal_id}/decision",
+                          json={"approve": approve, "note": note})
 
 
 def _dump(request: RunRequest | StudyCreate | dict) -> dict:

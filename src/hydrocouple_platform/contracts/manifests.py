@@ -133,6 +133,8 @@ class ArtifactKind(str, Enum):
     SUMMARY = "summary"
     EVALUATIONS = "evaluations"
     OTHER = "other"
+    STATE = "state"  # saved model state a later run resumes from
+    FORECAST = "forecast"
 
 
 class ArtifactEntry(_Model):
@@ -149,6 +151,15 @@ class RuntimeVersions(_Model):
     engine: str | None = None
     image: str | None = None
     host: str | None = None
+
+
+class ResumedFrom(_Model):
+    """The saved state an attempt resumed from: an artifact of an earlier run's attempt."""
+
+    run_id: str
+    attempt_id: str
+    path: str
+    sha256: str = Field(pattern=_SHA)
 
 
 class Provenance(_Model):
@@ -172,6 +183,16 @@ class Provenance(_Model):
     actor: Actor
     started_at: datetime
     finished_at: datetime
+    resumed_from: ResumedFrom | None = Field(
+        default=None, description="The saved state of an earlier run this attempt resumed from")
+
+    @model_serializer(mode="wrap")
+    def _no_resume_no_key(self, handler):
+        # Absent, not null, so attempt manifests written before resumed_from keep their digests.
+        data = handler(self)
+        if self.resumed_from is None:
+            data.pop("resumed_from", None)
+        return data
 
     def to_prov(self) -> dict[str, Any]:
         act = f"hcp:attempt/{self.attempt_id}"

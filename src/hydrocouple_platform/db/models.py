@@ -28,6 +28,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from ..contracts.deletion import DeletionState
+from ..contracts.schedules import Pace, ProposalState, ScheduleState
 from ..contracts.states import AttemptState, JobState
 
 
@@ -468,6 +469,104 @@ class Deletion(Base):
         CheckConstraint(_states_check(DeletionState), name="deletion_state_known"),
         Index("deletions_work", "state", "updated_at"),
         Index("deletions_target", "target_id", "state"),
+    )
+
+
+class Schedule(Base):
+    """The cycles of a digital twin; see ``contracts.schedules``."""
+
+    __tablename__ = "schedules"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("platform_sessions.id"))
+    revision_id: Mapped[str] = mapped_column(ForeignKey("revisions.id"))
+    target_id: Mapped[str] = mapped_column(ForeignKey("compute_targets.id"))
+    workflow: Mapped[str] = mapped_column(String(120))
+    workflow_version: Mapped[str] = mapped_column(String(20))
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # Model times: the engine's UTC wall clock, stored without a zone.
+    first_cycle_end: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    cycle_minutes: Mapped[float] = mapped_column(Float)
+    cycles: Mapped[int | None] = mapped_column(Integer)
+    pace: Mapped[str] = mapped_column(String(20))
+    lag_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    resume_from: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    await_decisions: Mapped[bool] = mapped_column(Boolean, default=False)
+    profile: Mapped[str | None] = mapped_column(String(40))
+    retry_budget: Mapped[int | None] = mapped_column(Integer)
+    estimated_runtime_seconds: Mapped[float | None] = mapped_column(Float)
+    state: Mapped[str] = mapped_column(String(20))
+    next_cycle: Mapped[int] = mapped_column(Integer, default=0)
+    # Submissions of next_cycle so far; a resume after a failed cycle submits it again.
+    tries: Mapped[int] = mapped_column(Integer, default=0)
+    current_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    last_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    pause_reason: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()
+    __table_args__ = (
+        CheckConstraint(_states_check(ScheduleState), name="schedule_state_known"),
+        CheckConstraint("pace in (" + ",".join(f"'{m.value}'" for m in Pace) + ")",
+                        name="schedule_pace_known"),
+        UniqueConstraint("organization_id", "idempotency_key", name="schedules_idempotency"),
+        Index("schedules_work", "state", "updated_at"),
+    )
+
+
+class ScheduleCycle(Base):
+    """One submission of one cycle of a schedule."""
+
+    __tablename__ = "schedule_cycles"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[str] = mapped_column(ForeignKey("schedules.id"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    attempt: Mapped[int] = mapped_column(Integer)
+    cycle_end: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"))
+    resumed_from: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    created_at: Mapped[datetime] = _ts()
+    __table_args__ = (UniqueConstraint("schedule_id", "number", "attempt"),)
+
+
+class SetpointProposal(Base):
+    """A proposed setting of a schedule's model; only a person decides it."""
+
+    __tablename__ = "setpoint_proposals"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    schedule_id: Mapped[str] = mapped_column(ForeignKey("schedules.id"))
+    state: Mapped[str] = mapped_column(String(20))
+    link: Mapped[str] = mapped_column(String(200))
+    property: Mapped[str] = mapped_column(String(80))
+    value: Mapped[float] = mapped_column(Float)
+    # Model times: the engine's UTC wall clock, stored without a zone.
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    proposed_by: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    note: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    decided_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    applied_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+    created_at: Mapped[datetime] = _ts()
+    __table_args__ = (
+        CheckConstraint(_states_check(ProposalState), name="proposal_state_known"),
+        # A decision is a person's: approved, rejected and applied proposals name one.
+        CheckConstraint("state in ('PROPOSED','SUPERSEDED') or decided_by is not null",
+                        name="proposal_decided_by_a_person"),
+        CheckConstraint("state <> 'APPLIED' or applied_run_id is not null",
+                        name="proposal_applied_by_a_run"),
+        Index("proposals_schedule", "schedule_id", "state", "effective_from"),
     )
 
 

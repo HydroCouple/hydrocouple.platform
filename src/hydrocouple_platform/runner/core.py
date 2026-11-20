@@ -127,6 +127,22 @@ def stage_inputs(ctx: Context) -> dict[str, str]:
         if digest != f.sha256 or dest.stat().st_size != f.size:
             raise RunnerFailure(EXIT_TRANSFER, f"input {f.path} does not match its checksum")
         used[f.path] = digest
+    for a in ctx.spec.inputs.artifacts:  # an earlier run's published files, checked the same way
+        ctx.check_cancel()
+        dest = ctx.inputs / a.path
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            ctx.store.get_file(a.key, dest)
+        except FileNotFoundError:
+            raise RunnerFailure(EXIT_MISSING_DEPENDENCY,
+                                f"{a.source_path} of run {a.run_id} is missing") from None
+        except OSError as exc:
+            raise RunnerFailure(EXIT_TRANSFER, f"could not download {a.path}: {exc}") from None
+        digest = sha256_file(dest)
+        if digest != a.sha256 or dest.stat().st_size != a.size:
+            raise RunnerFailure(EXIT_TRANSFER,
+                                f"{a.source_path} of run {a.run_id} does not match its checksum")
+        used[a.path] = digest
     return used
 
 
@@ -199,6 +215,9 @@ def publish(ctx: Context, result: HandlerResult, inputs_used: dict[str, str],
                                     engine=result.engine_version, image=spec.runtime.image,
                                     host=platform.platform()),
             actor=spec.actor, started_at=ctx.started_at, finished_at=finished,
+            resumed_from=next(({"run_id": a.run_id, "attempt_id": a.attempt_id,
+                                "path": a.source_path, "sha256": a.sha256}
+                               for a in spec.inputs.artifacts if a.role == "resume"), None),
         ),
     ).model_dump(mode="json", by_alias=True)
     manifest_path = ctx.outputs / "attempt.json"

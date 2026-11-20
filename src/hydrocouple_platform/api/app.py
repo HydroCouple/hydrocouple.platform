@@ -42,6 +42,13 @@ from ..contracts.requests import (
     RunRequest,
     TargetCreate,
 )
+from ..contracts.schedules import (
+    ProposalCreate,
+    ProposalDecision,
+    ProposalView,
+    ScheduleCreate,
+    ScheduleView,
+)
 from ..contracts.studies import (
     BatchSubmit,
     BatchView,
@@ -324,6 +331,35 @@ def create_app(
     @app.get("/v1/studies/{study_id}/manifest")
     def study_manifest(study_id: str, p: User) -> dict:
         return svc.study_manifest(p, study_id)
+
+    @app.post("/v1/schedules", status_code=201)
+    def create_schedule(body: ScheduleCreate, p: User,
+                        key: IdempotencyKey = None) -> ScheduleView:
+        return svc.create_schedule(p, body, _key(key))
+
+    @app.get("/v1/schedules/{schedule_id}")
+    def get_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.get_schedule(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/pause")
+    def pause_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.pause_schedule(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/resume")
+    def resume_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.resume_schedule(p, schedule_id)
+
+    @app.get("/v1/schedules/{schedule_id}/proposals")
+    def list_proposals(schedule_id: str, p: User) -> list[ProposalView]:
+        return svc.list_proposals(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/proposals", status_code=201)
+    def propose_setpoint(schedule_id: str, body: ProposalCreate, p: User) -> ProposalView:
+        return svc.propose_setpoint(p, schedule_id, body)
+
+    @app.post("/v1/proposals/{proposal_id}/decision")
+    def decide_proposal(proposal_id: str, body: ProposalDecision, p: User) -> ProposalView:
+        return svc.decide_proposal(p, proposal_id, body)
 
     # -- agent routes -------------------------------------------------------------------
 

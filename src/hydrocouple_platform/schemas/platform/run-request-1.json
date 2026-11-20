@@ -37,6 +37,19 @@
       "title": "Project Id",
       "type": "string"
     },
+    "resume_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "A published run of the same resumable workflow, project and target whose saved state this run continues from",
+      "title": "Resume From"
+    },
     "retry_budget": {
       "anyOf": [
         {

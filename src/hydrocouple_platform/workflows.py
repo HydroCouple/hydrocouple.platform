@@ -31,6 +31,8 @@ class Workflow:
     # Signed image digest per architecture; empty until an image is qualified.
     images: dict[str, str] = field(default_factory=dict)
     description: str = ""
+    # Whether a run may continue from the saved state of an earlier run of this workflow.
+    resumable: bool = False
 
     def validate_parameters(self, parameters: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -134,10 +136,116 @@ GYM_EVALUATE_V1 = Workflow(
                 "candidate, the engine kept loaded across evaluations.",
 )
 
+# Model times are the engine's UTC wall clock, written without a zone.
+_WALL_CLOCK = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$"
+_ELEMENT_FIELD = r"^[a-z0-9_]+(\.[a-z0-9_]+)+$"
+
+TWIN_CYCLE_V1 = Workflow(
+    name="twin.cycle",
+    version="1",
+    job_class=JobClass.SINGLE,
+    handler="twin.cycle",
+    allowed_components=frozenset({OPENSWMM_ENGINE_COMPONENT}),
+    parameters_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["cycle_end"],
+        "properties": {
+            "threads": {"type": "integer", "minimum": 1, "maximum": 64, "default": 1},
+            # The cycle runs to here and records its state for the next cycle.
+            "cycle_end": {"type": "string", "pattern": _WALL_CLOCK},
+            # Rain telemetry: each gage reads a column of a CSV of the revision, cut before
+            # the cycle's end.
+            "telemetry": {
+                "type": "array",
+                "maxItems": 1_000,
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["gage", "series"],
+                    "properties": {
+                        "gage": {"type": "string", "minLength": 1},
+                        "series": {"type": "string", "minLength": 1},
+                        "column": {"type": "string", "minLength": 1},
+                        "format": {"enum": ["INTENSITY", "VOLUME"], "default": "INTENSITY"},
+                    },
+                },
+            },
+            # Setpoints a person approved (the control plane checks each proposal), applied
+            # from their effective times.
+            "setpoints": {
+                "type": "array",
+                "maxItems": 10_000,
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["link", "value", "effective_from", "proposal_id"],
+                    "properties": {
+                        "link": {"type": "string", "minLength": 1},
+                        "value": {"type": "number", "minimum": 0, "maximum": 1},
+                        "effective_from": {"type": "string", "pattern": _WALL_CLOCK},
+                        "proposal_id": {"type": "string", "minLength": 1},
+                    },
+                },
+            },
+            # A forecast from the cycle's end state, with no rain after the cycle's end.
+            "forecast": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["horizon_minutes"],
+                "properties": {
+                    "horizon_minutes": {"type": "number", "exclusiveMinimum": 0,
+                                        "maximum": 10_080},
+                    "every_minutes": {"type": "number", "exclusiveMinimum": 0, "default": 5},
+                    "observe": {
+                        "type": "array",
+                        "maxItems": 1_000,
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["path", "id"],
+                            "properties": {
+                                "path": {"type": "string", "pattern": _ELEMENT_FIELD},
+                                "id": {"type": "string", "minLength": 1},
+                            },
+                        },
+                    },
+                },
+            },
+            # A control curve over the forecast: the link's setting, linear in an observed
+            # field between knots, decided at the issue time and each sample time and rounded
+            # to the resolution; each change becomes a setpoint proposal.
+            "policy": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["link", "observe", "element", "x", "setting"],
+                "properties": {
+                    "link": {"type": "string", "minLength": 1},
+                    "observe": {"type": "string", "pattern": _ELEMENT_FIELD},
+                    "element": {"type": "string", "minLength": 1},
+                    "x": {"type": "array", "minItems": 2, "items": {"type": "number"}},
+                    "setting": {"type": "array", "minItems": 2,
+                                "items": {"type": "number", "minimum": 0, "maximum": 1}},
+                    "resolution": {"type": "number", "exclusiveMinimum": 0, "maximum": 1,
+                                   "default": 0.05},
+                },
+            },
+        },
+    },
+    required_artifacts=("run.json", "attempt.json", "model.rpt", "state.h5", "cycle.json"),
+    description="One digital twin cycle on the OpenSWMM engine: continue from the previous "
+                "cycle's state with the telemetry that arrived, record the state at the cycle's "
+                "end, then forecast and propose setpoints.",
+    resumable=True,
+)
+
 REGISTRY: dict[tuple[str, str], Workflow] = {
     (SWMM_SIMULATION_V1.name, SWMM_SIMULATION_V1.version): SWMM_SIMULATION_V1,
     (SWMM_SIMULATION_V2.name, SWMM_SIMULATION_V2.version): SWMM_SIMULATION_V2,
     (GYM_EVALUATE_V1.name, GYM_EVALUATE_V1.version): GYM_EVALUATE_V1,
+    (TWIN_CYCLE_V1.name, TWIN_CYCLE_V1.version): TWIN_CYCLE_V1,
 }
 
 

@@ -87,6 +87,62 @@
       "title": "Actor",
       "type": "object"
     },
+    "ArtifactInput": {
+      "additionalProperties": false,
+      "description": "A file another run published, staged as an input: a twin cycle's previous state.",
+      "properties": {
+        "attempt_id": {
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "key": {
+          "description": "Its object key in the target's storage",
+          "title": "Key",
+          "type": "string"
+        },
+        "path": {
+          "description": "Where the runner stages it, relative to its inputs",
+          "title": "Path",
+          "type": "string"
+        },
+        "role": {
+          "const": "resume",
+          "default": "resume",
+          "title": "Role",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        },
+        "source_path": {
+          "description": "Its path among that attempt's artifacts",
+          "title": "Source Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "key",
+        "sha256",
+        "size",
+        "run_id",
+        "attempt_id",
+        "source_path"
+      ],
+      "title": "ArtifactInput",
+      "type": "object"
+    },
     "EgressPolicy": {
       "description": "What an agent lets leave the execution site in events and results.",
       "enum": [
@@ -196,6 +252,13 @@
     "Inputs": {
       "additionalProperties": false,
       "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/ArtifactInput"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
         "composition": {
           "default": "composition.json",
           "title": "Composition",

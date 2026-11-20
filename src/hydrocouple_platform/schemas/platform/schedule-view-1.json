@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "Pace": {
+      "enum": [
+        "replay",
+        "wall_clock"
+      ],
+      "title": "Pace",
+      "type": "string"
+    },
+    "ScheduleCycleView": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt": {
+          "description": "1 for the first submission, more after a resume",
+          "title": "Attempt",
+          "type": "integer"
+        },
+        "cycle_end": {
+          "format": "date-time",
+          "title": "Cycle End",
+          "type": "string"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "job_state": {
+          "title": "Job State",
+          "type": "string"
+        },
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "resumed_from": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Resumed From"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "number",
+        "cycle_end",
+        "attempt",
+        "run_id",
+        "job_id",
+        "job_state",
+        "resumed_from"
+      ],
+      "title": "ScheduleCycleView",
+      "type": "object"
+    },
+    "ScheduleState": {
+      "enum": [
+        "ACTIVE",
+        "PAUSED",
+        "COMPLETED"
+      ],
+      "title": "ScheduleState",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/schedule-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "agent_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Agent Session Id"
+    },
+    "await_decisions": {
+      "title": "Await Decisions",
+      "type": "boolean"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "cycle_minutes": {
+      "title": "Cycle Minutes",
+      "type": "number"
+    },
+    "cycles": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Cycles"
+    },
+    "first_cycle_end": {
+      "format": "date-time",
+      "title": "First Cycle End",
+      "type": "string"
+    },
+    "history": {
+      "items": {
+        "$ref": "#/$defs/ScheduleCycleView"
+      },
+      "title": "History",
+      "type": "array"
+    },
+    "lag_seconds": {
+      "title": "Lag Seconds",
+      "type": "number"
+    },
+    "last_run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "The last cycle that succeeded",
+      "title": "Last Run Id"
+    },
+    "next_cycle": {
+      "description": "The cycle running now, or the next one to submit",
+      "title": "Next Cycle",
+      "type": "integer"
+    },
+    "pace": {
+      "$ref": "#/$defs/Pace"
+    },
+    "parameters": {
+      "additionalProperties": true,
+      "title": "Parameters",
+      "type": "object"
+    },
+    "pause_reason": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Pause Reason"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "schedule_id": {
+      "title": "Schedule Id",
+      "type": "string"
+    },
+    "state": {
+      "$ref": "#/$defs/ScheduleState"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "workflow": {
+      "title": "Workflow",
+      "type": "string"
+    },
+    "workflow_version": {
+      "title": "Workflow Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schedule_id",
+    "state",
+    "project_id",
+    "revision_id",
+    "target_id",
+    "workflow",
+    "workflow_version",
+    "parameters",
+    "first_cycle_end",
+    "cycle_minutes",
+    "cycles",
+    "pace",
+    "lag_seconds",
+    "await_decisions",
+    "next_cycle",
+    "last_run_id",
+    "pause_reason",
+    "agent_session_id",
+    "history",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "ScheduleView",
+  "type": "object"
+}

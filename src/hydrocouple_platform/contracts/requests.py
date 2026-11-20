@@ -84,6 +84,9 @@ class RunRequest(_Model):
     retry_budget: int | None = Field(default=None, ge=0, le=10)
     estimated_runtime_seconds: float | None = Field(default=None, gt=0)
     tool_call_id: str | None = None
+    resume_from: str | None = Field(
+        default=None, description="A published run of the same resumable workflow, project and "
+                                  "target whose saved state this run continues from")
 
 
 class Estimate(_Model):

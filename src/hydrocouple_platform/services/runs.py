@@ -15,6 +15,7 @@ from ..contracts.capabilities import AdapterCapabilities, check_spec
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import (
     Actor,
+    ArtifactInput,
     Inputs,
     JobClass,
     JobSpec,
@@ -54,6 +55,7 @@ PROFILES: dict[str, dict[str, float]] = {
 }
 ACTIVE_STATES = [s.value for s in JobState if s not in JOB_TERMINAL]
 DEFAULT_RETRY_BUDGET = 2
+RESUME_STATE = "state.h5"  # the saved state a resumable workflow publishes
 
 
 def run_prefix(organization_id: str, project_id: str, run_id: str) -> str:
@@ -70,6 +72,7 @@ class _Checked:
     resources: Resources
     findings: list[str]
     request_hash: str
+    resume: ArtifactInput | None = None
 
 
 class RunServices(ServiceBase):
@@ -87,8 +90,14 @@ class RunServices(ServiceBase):
                 raise PlatformError(ErrorCode.NOT_FOUND, f"session {req.session_id} was not found")
         workflow = get_workflow(req.workflow, req.workflow_version)
         parameters = workflow.validate_parameters(req.parameters)
+        if parameters.get("setpoints"):
+            self.check_setpoints(s, project.id, parameters["setpoints"])  # type: ignore[attr-defined]
 
         findings: list[str] = []
+        resume = None
+        if req.resume_from is not None:
+            resume = self._resume_input(s, principal, req.resume_from, project, target, workflow,
+                                        findings)
         if revision.state != "READY":
             findings.append(f"revision {revision.id} is {revision.state}, not READY")
         if revision.target_id != target.id:
@@ -114,11 +123,11 @@ class RunServices(ServiceBase):
             cap = AdapterCapabilities.model_validate(target.capabilities)
             probe = self._spec(
                 "job_probe", "run_probe", project, revision, target, workflow, parameters,
-                resources, req, Actor(human_subject=principal.subject),
+                resources, req, Actor(human_subject=principal.subject), resume,
             )
             findings.extend(check_spec(cap, probe))
 
-        request_hash = sha256_of({
+        hashed = {
             "project_id": project.id, "session_id": req.session_id, "revision_id": revision.id,
             "manifest_sha256": revision.manifest_sha256, "workflow": workflow.name,
             "workflow_version": workflow.version, "parameters": parameters,
@@ -126,9 +135,44 @@ class RunServices(ServiceBase):
             "retry_budget": DEFAULT_RETRY_BUDGET if req.retry_budget is None else req.retry_budget,
             "estimated_runtime_seconds": req.estimated_runtime_seconds,
             "agent_session_id": principal.agent_session_id,
-        })
+        }
+        if req.resume_from is not None:  # absent otherwise, so earlier requests keep their hash
+            hashed["resume_from"] = req.resume_from
         return _Checked(project, revision, target, workflow, parameters, resources, findings,
-                        request_hash)
+                        sha256_of(hashed), resume)
+
+    def _resume_input(self, s: Session, principal: Principal, run_id: str, project: Project,
+                      target: ComputeTarget, workflow: Workflow,
+                      findings: list[str]) -> ArtifactInput | None:
+        """The saved state of run ``run_id`` as an input, or None with the reason in findings."""
+        if not workflow.resumable:
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"{workflow.name}@{workflow.version} does not continue from "
+                                "an earlier run's state")
+        earlier = self.owned(s, Run, run_id, principal, "viewer")
+        if earlier.project_id != project.id:
+            raise PlatformError(ErrorCode.NOT_FOUND, f"run {run_id} was not found")
+        self._not_deleted(earlier)
+        if earlier.workflow != workflow.name:
+            findings.append(f"run {run_id} ran {earlier.workflow}, not {workflow.name}; only "
+                            "a run of the same workflow saved a state this one can continue")
+            return None
+        if earlier.target_id != target.id:
+            findings.append(f"run {run_id} ran on another target; data is never moved "
+                            "between targets implicitly")
+            return None
+        if earlier.canonical_attempt_id is None:
+            findings.append(f"run {run_id} has no published result yet")
+            return None
+        state = s.scalar(select(Artifact).where(
+            Artifact.attempt_id == earlier.canonical_attempt_id, Artifact.path == RESUME_STATE))
+        if state is None or state.kind != "state":
+            findings.append(f"run {run_id} published no saved state ({RESUME_STATE})")
+            return None
+        return ArtifactInput(role="resume", path=f"resume/{RESUME_STATE}",
+                             key=state.storage_key, sha256=state.sha256, size=state.size,
+                             run_id=earlier.id, attempt_id=state.attempt_id,
+                             source_path=state.path)
 
     @staticmethod
     def _run_findings(checked: _Checked) -> list[str]:
@@ -138,7 +182,7 @@ class RunServices(ServiceBase):
         return []
 
     def _spec(self, job_id, run_id, project, revision, target, workflow, parameters, resources,
-              req: RunRequest, actor: Actor) -> JobSpec:
+              req: RunRequest, actor: Actor, resume: ArtifactInput | None = None) -> JobSpec:
         threads = int(parameters.get("threads", 1))
         return JobSpec(
             job_id=job_id, run_id=run_id, organization_id=project.organization_id,
@@ -154,6 +198,7 @@ class RunServices(ServiceBase):
                 composition=revision.manifest.get("composition", "composition.json"),
                 files=[{"path": f["path"], "sha256": f["sha256"], "size": f["size"]}
                        for f in revision.manifest["files"]],
+                artifacts=[resume] if resume is not None else [],
             ),
             resources=resources,
             placement=Placement(target_id=target.id),
@@ -297,7 +342,8 @@ class RunServices(ServiceBase):
 
             run_id, job_id = new_id("run"), new_id("job")
             spec = self._spec(job_id, run_id, checked.project, checked.revision, checked.target,
-                              checked.workflow, checked.parameters, checked.resources, req, actor)
+                              checked.workflow, checked.parameters, checked.resources, req, actor,
+                              checked.resume)
             run = Run(
                 id=run_id, organization_id=org_id, project_id=checked.project.id,
                 session_id=req.session_id, revision_id=checked.revision.id,
