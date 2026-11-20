@@ -142,7 +142,8 @@ def package_swmm_model(
             problems.append(f"extra file {rel!r}: {local} does not exist")
             continue
         sources[package_path] = source
-        roles[package_path] = (FileRole.SIDECAR, str(local))
+        # The name the model's folder gives it, never the local path it was copied from.
+        roles[package_path] = (FileRole.SIDECAR, PurePosixPath(rel).as_posix())
 
     if problems:
         raise PackagingError(problems)

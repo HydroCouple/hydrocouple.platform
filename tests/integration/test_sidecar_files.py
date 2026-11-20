@@ -45,7 +45,8 @@ def test_a_sidecar_is_hashed_and_verified_like_every_input(services, artifact_di
     package = package_swmm_model(DATA / "site_drainage_example.inp", artifact_dir / "package",
                                  extra_files={"data/observed.csv": obs})
     (entry,) = [f for f in package.manifest.files if f.role == FileRole.SIDECAR]
-    assert (entry.path, entry.source) == ("model/data/observed.csv", str(obs))
+    assert (entry.path, entry.source) == ("model/data/observed.csv", "data/observed.csv")
+    assert str(artifact_dir) not in package.manifest.model_dump_json()  # no local paths
     assert upload(world, package)["state"] == "READY"
 
     changed = artifact_dir / "changed.csv"
