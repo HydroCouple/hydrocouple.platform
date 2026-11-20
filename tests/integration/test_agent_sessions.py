@@ -144,7 +144,8 @@ def test_a_session_credential_works_over_http_and_carries_the_budget(
     revision = ready_revision(world)
     row, _ = agent(world, max_runs=0)
     with PlatformClient(server, row["agent_session_token"]) as bot:
-        assert bot.me()["subject"] == "alice"
+        me = bot.me()
+        assert me["subject"] == "alice" and me["agent_session_id"] == row["agent_session_id"]
         accepted = bot.submit_run({
             "project_id": world.project_id, "revision_id": revision["revision_id"],
             "workflow": "swmm.simulation", "workflow_version": "1",

@@ -151,7 +151,9 @@ def create_app(
 
     @app.get("/v1/me")
     def me(p: User) -> dict[str, Any]:
-        return {"user_id": p.user_id, "subject": p.subject, "roles": p.roles}
+        # agent_session_id names the session an agent session credential belongs to.
+        return {"user_id": p.user_id, "subject": p.subject, "roles": p.roles,
+                "agent_session_id": p.agent_session_id}
 
     @app.get("/v1/workflows")
     def workflows(_: User) -> list[dict[str, Any]]:
