@@ -1,32 +1,5 @@
 {
   "$defs": {
-    "Dimension": {
-      "additionalProperties": false,
-      "description": "One component of the decision vector.",
-      "properties": {
-        "high": {
-          "title": "High",
-          "type": "number"
-        },
-        "label": {
-          "maxLength": 200,
-          "minLength": 1,
-          "title": "Label",
-          "type": "string"
-        },
-        "low": {
-          "title": "Low",
-          "type": "number"
-        }
-      },
-      "required": [
-        "label",
-        "low",
-        "high"
-      ],
-      "title": "Dimension",
-      "type": "object"
-    },
     "Objective": {
       "additionalProperties": false,
       "properties": {
@@ -57,8 +30,9 @@
       "description": "What a study evaluates and how it searches: the same wherever it runs.",
       "properties": {
         "dimensions": {
+          "description": "Components in decision-vector order; each evaluation's decisions[key] lists its key's components in this order",
           "items": {
-            "$ref": "#/$defs/Dimension"
+            "$ref": "#/$defs/StudyDimension"
           },
           "title": "Dimensions",
           "type": "array"
@@ -120,6 +94,41 @@
         "optimization"
       ],
       "title": "StudyDefinition",
+      "type": "object"
+    },
+    "StudyDimension": {
+      "additionalProperties": false,
+      "description": "One component of the decision vector, with the decision key it belongs to.",
+      "properties": {
+        "high": {
+          "title": "High",
+          "type": "number"
+        },
+        "key": {
+          "description": "The key of the component's values in an evaluation's decisions",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "low": {
+          "title": "Low",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "low",
+        "high",
+        "key"
+      ],
+      "title": "StudyDimension",
       "type": "object"
     },
     "StudyEvaluation": {

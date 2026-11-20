@@ -117,6 +117,13 @@ class StudyEvaluation(_Model):
     error: str | None = None
 
 
+class StudyDimension(Dimension):
+    """One component of the decision vector, with the decision key it belongs to."""
+
+    key: str = Field(min_length=1, max_length=200,
+                     description="The key of the component's values in an evaluation's decisions")
+
+
 class StudyDefinition(_Model):
     """What a study evaluates and how it searches: the same wherever it runs."""
 
@@ -127,7 +134,9 @@ class StudyDefinition(_Model):
                     "which records when it was packaged")
     env_config: dict[str, Any] = Field(
         description="The evaluator env config; its model path is the path in the package")
-    dimensions: list[Dimension]
+    dimensions: list[StudyDimension] = Field(
+        description="Components in decision-vector order; each evaluation's decisions[key] lists "
+                    "its key's components in this order")
     objectives: list[Objective]
     optimization: dict[str, Any]
     seed: int | None = None

@@ -57,7 +57,8 @@ def test_two_runs_of_one_study_compare_without_their_runtime():
     definition = {"workflow": "gym.evaluate", "workflow_version": "1",
                   "model_inputs": {"model/model.inp": "b" * 64},
                   "env_config": {"env_type": "cip", "inp_path": "model/model.inp"},
-                  "dimensions": [{"label": "field_design:S1", "low": 100.0, "high": 900.0}],
+                  "dimensions": [{"label": "field_design:S1", "key": "w", "low": 100.0,
+                                  "high": 900.0}],
                   "objectives": [{"name": "flooding", "direction": "minimize"}],
                   "optimization": {"algorithm": "alternatives", "budget": 1}, "seed": 7}
     local = StudyManifest(definition=definition, evaluations=[record], result={"best": record},
