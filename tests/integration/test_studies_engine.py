@@ -102,14 +102,19 @@ class Platform:
             raise self.errors[0]
 
 
-def local_reference(opt, artifact_dir, objectives=None):
+def local_reference(opt, artifact_dir, files=None, **overrides):
+    """A local study of ``env_config`` (with ``overrides``) on a copy of the model;
+    ``files`` maps paths in the model's folder to text written there first."""
     from openswmm_gymnasium.optimize import run_study
     from openswmm_gymnasium.spec.config import EnvConfig
 
     model = artifact_dir / "local-model" / "model.inp"
     model.parent.mkdir(parents=True)
     shutil.copyfile(MODEL, model)
-    config = EnvConfig.model_validate(env_config(str(model)) | {"objectives": objectives})
+    for rel, text in (files or {}).items():
+        (model.parent / rel).parent.mkdir(parents=True, exist_ok=True)
+        (model.parent / rel).write_text(text)
+    config = EnvConfig.model_validate(env_config(str(model)) | overrides)
     if opt.algorithm != "random_search" and opt.seed is not None:
         random.seed(opt.seed)  # run_study leaves Platypus unseeded; seed it as the platform does
     return config, run_study(config, opt, artifact_dir / "local")
@@ -134,8 +139,8 @@ def assert_same_evaluations(local, remote):
                 (a["evaluation"], name)
 
 
-def upload(client, world, artifact_dir):
-    package = package_swmm_model(MODEL, artifact_dir / "package")
+def upload(client, world, artifact_dir, extra_files=None):
+    package = package_swmm_model(MODEL, artifact_dir / "package", extra_files=extra_files)
     return client.upload_revision(package, project_id=world.project_id,
                                   target_id=world.target_id)
 
@@ -335,4 +340,50 @@ def test_terms_that_are_not_objectives_are_metrics_locally_and_on_the_platform(
         for side in ("local", "platform"))
     local_manifest, remote_manifest = manifests
     assert [o.name for o in local_manifest.definition.objectives] == ["flooding_volume"]
+    assert local_manifest.comparable() == remote_manifest.comparable()
+
+
+def test_an_event_study_scores_every_storm_locally_and_on_the_platform(
+        services, artifact_dir, server, make_token):
+    """Ecosystem Phase 3, work package 3.5: three storms per candidate, their rain in the
+    revision as sidecars, and equal manifests."""
+    from openswmm_gymnasium.optimize import OptimizationConfig
+    from openswmm_gymnasium.optimize.manifest import sidecar_files
+
+    from hydrocouple_platform.contracts.studies import StudyManifest
+
+    storms = {"short": ("2024-01-02T00:00:00", "2024-01-02T03:00:00", [2.0, 8.0, 3.0]),
+              "long": ("2024-01-03T00:00:00", "2024-01-03T05:00:00", [1.0, 3.0, 4.0, 3.0, 1.0]),
+              "burst": ("2024-01-04T06:00:00", "2024-01-04T09:00:00", [14.0, 6.0])}
+    files, events = {}, []
+    for (name, (start, end, rain)), weight in zip(storms.items(), (0.6, 0.3, 0.1), strict=True):
+        first = int(start[11:13])  # rain every ten minutes from ten past the window's start
+        times = [f"{start[:11]}{first:02d}:{10 * i + 10:02d}:00" for i in range(len(rain))]
+        files[f"rain/{name}.csv"] = "time,rain\n" + "".join(
+            f"{t},{v}\n" for t, v in zip(times, rain, strict=True))
+        events.append({"name": name, "series": f"rain/{name}.csv", "gage": "RG",
+                       "start": start, "end": end, "weight": weight})
+    opt = OptimizationConfig(algorithm="random_search", budget=4, seed=4, workers=0,
+                             on_failure="penalty")
+    config, _ = local_reference(opt, artifact_dir, files=files, events=events,
+                                event_aggregation="weighted_mean")
+    world = make_world(services, artifact_dir)
+    with Platform(services, world, server, artifact_dir, slots=2), \
+            PlatformClient(server, make_token("alice")) as client:
+        revision = upload(client, world, artifact_dir, extra_files=sidecar_files(config))
+        run_platform_study(config, opt, artifact_dir / "platform", client=client,
+                           project_id=world.project_id, revision_id=revision["revision_id"],
+                           target_id=world.target_id, inp_path="model/model.inp", batch_size=2)
+
+    local = read_jsonl(artifact_dir / "local" / "evaluations.jsonl")
+    assert_same_evaluations(local, read_jsonl(artifact_dir / "platform" / "evaluations.jsonl"))
+    for record in local:
+        assert record["steps"] == 3 and not record.get("failed")
+        for term in ("flooding_volume", "peak_outflow"):
+            assert {f"{term}@{name}" for name in storms} <= set(record["metrics"])
+    local_manifest, remote_manifest = (
+        StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
+        for side in ("local", "platform"))
+    assert set(local_manifest.definition.model_inputs) == \
+        {"model/model.inp"} | {f"model/rain/{name}.csv" for name in storms}
     assert local_manifest.comparable() == remote_manifest.comparable()
