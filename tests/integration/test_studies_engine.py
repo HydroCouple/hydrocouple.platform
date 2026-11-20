@@ -267,3 +267,28 @@ def test_an_alternatives_study_has_the_same_manifest_locally_and_on_the_platform
     assert local.runtime["executor"] == "local" and remote.runtime["executor"] == "platform"
     assert remote.runtime["revision_id"] == revision["revision_id"]
     assert set(local.definition.model_inputs) == {"model/model.inp"}
+
+
+def test_a_latin_hypercube_study_draws_the_same_design_locally_and_on_the_platform(
+        services, artifact_dir, server, make_token):
+    """Ecosystem Phase 3, work package 3.1: one seed, one design, wherever it is evaluated."""
+    pytest.importorskip("scipy.stats")
+    from openswmm_gymnasium.optimize import OptimizationConfig
+
+    from hydrocouple_platform.contracts.studies import StudyManifest
+
+    opt = OptimizationConfig(algorithm="lhs", budget=6, seed=21, workers=0, on_failure="penalty")
+    config, _ = local_reference(opt, artifact_dir)
+    world = make_world(services, artifact_dir)
+    with Platform(services, world, server, artifact_dir, slots=2), \
+            PlatformClient(server, make_token("alice")) as client:
+        revision = upload(client, world, artifact_dir)
+        run_platform_study(config, opt, artifact_dir / "platform", client=client,
+                           project_id=world.project_id, revision_id=revision["revision_id"],
+                           target_id=world.target_id, inp_path="model/model.inp", batch_size=4)
+
+    local, remote = (
+        StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
+        for side in ("local", "platform"))
+    assert len(local.evaluations) == 6
+    assert local.comparable() == remote.comparable()
