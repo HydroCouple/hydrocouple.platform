@@ -32,6 +32,22 @@
           "default": null,
           "title": "Error"
         },
+        "metrics": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": "Every value the evaluator reports for a candidate, objective or not, as reported (not negated for a maximized objective); null when it was not finite",
+          "maxProperties": 1000,
+          "title": "Metrics",
+          "type": "object"
+        },
         "steps": {
           "default": 0,
           "minimum": 0,

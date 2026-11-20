@@ -125,7 +125,10 @@ def _outcome(record: dict):
     from openswmm_gymnasium.optimize import Evaluation
 
     return Evaluation(costs=None if record["failed"] else record["costs"],
-                      steps=record["steps"], error=record["error"])
+                      steps=record["steps"], error=record["error"],
+                      # Sorted by name, as the evaluator reports them: the control plane's
+                      # JSON storage does not keep key order.
+                      metrics=dict(sorted((record.get("metrics") or {}).items())))
 
 
 def run_platform_study(env_config, opt, output_dir: str | Path, *, client: PlatformClient,
@@ -196,6 +199,7 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
                         costs = [opt.failure_penalty] * len(names)
                         record.update(failed=True, error=outcome.error)
                     record["objectives"] = dict(zip(names, costs, strict=True))
+                    record["metrics"] = outcome.metrics
                     record["steps"] = outcome.steps
                     evaluations.append(record)
                     log.write(json.dumps(record) + "\n")

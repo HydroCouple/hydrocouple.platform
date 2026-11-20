@@ -37,6 +37,9 @@ class StudyState(str, Enum):
 STUDY_TERMINAL = frozenset({StudyState.COMPLETED, StudyState.CANCELLED, StudyState.FAILED,
                             StudyState.REJECTED})
 
+METRICS = ("Every value the evaluator reports for a candidate, objective or not, as reported "
+           "(not negated for a maximized objective); null when it was not finite")
+
 
 class BatchState(str, Enum):
     QUEUED = "QUEUED"
@@ -112,6 +115,7 @@ class StudyEvaluation(_Model):
     evaluation: int = Field(ge=1)
     decisions: dict[str, list[float]]
     objectives: dict[str, float]
+    metrics: dict[str, float | None] = Field(default_factory=dict, description=METRICS)
     steps: int = 0
     failed: bool = False
     error: str | None = None
@@ -176,6 +180,7 @@ class EvaluationRecord(_Model):
 
     evaluation: int = Field(ge=1, description="1-based position in the study, in submission order")
     costs: list[float] | None
+    metrics: dict[str, float | None] = Field(default_factory=dict, description=METRICS)
     failed: bool = False
     error: str | None = None
     steps: int = 0
@@ -228,6 +233,8 @@ class EvaluationResult(_Model):
     """One candidate as an evaluator reports it."""
 
     costs: list[float] | None = None
+    metrics: dict[str, float | None] = Field(default_factory=dict, max_length=1000,
+                                             description=METRICS)
     steps: int = Field(default=0, ge=0)
     error: str | None = Field(default=None, max_length=2000)
 
@@ -237,6 +244,8 @@ class EvaluationResult(_Model):
             raise ValueError("an evaluation result has costs or an error, not both or neither")
         if self.costs is not None and not all(math.isfinite(c) for c in self.costs):
             raise ValueError("costs must be finite")
+        if not all(v is None or math.isfinite(v) for v in self.metrics.values()):
+            raise ValueError("metrics must be finite or null")
         return self
 
 

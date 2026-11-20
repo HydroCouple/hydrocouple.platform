@@ -102,14 +102,14 @@ class Platform:
             raise self.errors[0]
 
 
-def local_reference(opt, artifact_dir):
+def local_reference(opt, artifact_dir, objectives=None):
     from openswmm_gymnasium.optimize import run_study
     from openswmm_gymnasium.spec.config import EnvConfig
 
     model = artifact_dir / "local-model" / "model.inp"
     model.parent.mkdir(parents=True)
     shutil.copyfile(MODEL, model)
-    config = EnvConfig.model_validate(env_config(str(model)))
+    config = EnvConfig.model_validate(env_config(str(model)) | {"objectives": objectives})
     if opt.algorithm != "random_search" and opt.seed is not None:
         random.seed(opt.seed)  # run_study leaves Platypus unseeded; seed it as the platform does
     return config, run_study(config, opt, artifact_dir / "local")
@@ -127,6 +127,10 @@ def assert_same_evaluations(local, remote):
         assert a.get("failed", False) == b.get("failed", False)
         for name, value in a["objectives"].items():
             assert b["objectives"][name] == pytest.approx(value, rel=1e-12, abs=1e-9), \
+                (a["evaluation"], name)
+        assert list(a["metrics"]) == list(b["metrics"])
+        for name, value in a["metrics"].items():
+            assert b["metrics"][name] == pytest.approx(value, rel=1e-12, abs=1e-9), \
                 (a["evaluation"], name)
 
 
@@ -292,3 +296,43 @@ def test_a_latin_hypercube_study_draws_the_same_design_locally_and_on_the_platfo
         for side in ("local", "platform"))
     assert len(local.evaluations) == 6
     assert local.comparable() == remote.comparable()
+
+
+def test_terms_that_are_not_objectives_are_metrics_locally_and_on_the_platform(
+        services, artifact_dir, server, make_token):
+    """Ecosystem Phase 3, work package 3.4: every reward term is recorded, objective or not."""
+    from openswmm_gymnasium.optimize import OptimizationConfig
+
+    from hydrocouple_platform.contracts.studies import StudyManifest
+
+    opt = OptimizationConfig(algorithm="random_search", budget=5, seed=8, workers=0,
+                             on_failure="penalty")
+    config, _ = local_reference(opt, artifact_dir, objectives=["flooding_volume"])
+    world = make_world(services, artifact_dir)
+    with Platform(services, world, server, artifact_dir, slots=2), \
+            PlatformClient(server, make_token("alice")) as client:
+        revision = upload(client, world, artifact_dir)
+        result = run_platform_study(
+            config, opt, artifact_dir / "platform", client=client,
+            project_id=world.project_id, revision_id=revision["revision_id"],
+            target_id=world.target_id, inp_path="model/model.inp", batch_size=3)
+        study_id = result["execution"]["platform"]["study_id"]
+        listed = client.study_evaluations(study_id)["evaluations"]
+
+    local = read_jsonl(artifact_dir / "local" / "evaluations.jsonl")
+    assert_same_evaluations(local, read_jsonl(artifact_dir / "platform" / "evaluations.jsonl"))
+    for record in local:
+        assert list(record["objectives"]) == ["flooding_volume"]
+        assert list(record["metrics"]) == ["flooding_volume", "peak_outflow"]
+    assert len({r["metrics"]["peak_outflow"] for r in local}) > 1
+    # The control plane keeps them, and the evaluator's own records hold them too.
+    assert [r["metrics"] for r in listed] == [r["metrics"] for r in local]
+    chunks = sorted((artifact_dir / "agent-work").rglob("evaluations/*.jsonl"))
+    stored = {r["evaluation"]: r for c in chunks for r in read_jsonl(c)}
+    assert stored and all(r["metrics"] for r in stored.values())
+    manifests = (
+        StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
+        for side in ("local", "platform"))
+    local_manifest, remote_manifest = manifests
+    assert [o.name for o in local_manifest.definition.objectives] == ["flooding_volume"]
+    assert local_manifest.comparable() == remote_manifest.comparable()

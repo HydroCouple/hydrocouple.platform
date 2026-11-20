@@ -659,7 +659,8 @@ class StudyServices(ServiceBase):
         for i, r in enumerate(results):
             evaluation = batch.offset + chunk.start + i + 1
             if r.get("error") is None:
-                records.append({"evaluation": evaluation, "costs": r["costs"], "failed": False,
+                records.append({"evaluation": evaluation, "costs": r["costs"],
+                                "metrics": r.get("metrics") or {}, "failed": False,
                                 "error": None, "steps": r.get("steps", 0)})
                 continue
             failures.append((evaluation, r["error"]))

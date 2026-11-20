@@ -18,7 +18,11 @@ from hydrocouple_platform.contracts.manifests import (
     sha256_of,
 )
 from hydrocouple_platform.contracts.requests import AgentSessionView, ApprovalView
-from hydrocouple_platform.contracts.studies import StudyManifest
+from hydrocouple_platform.contracts.studies import (
+    EvaluationResult,
+    StudyEvaluation,
+    StudyManifest,
+)
 from hydrocouple_platform.packaging import package_swmm_model
 
 
@@ -70,6 +74,19 @@ def test_two_runs_of_one_study_compare_without_their_runtime():
     assert document["schema"] == "hydrocouple.platform/study-manifest/1"
     jsonschema.validate(document, _schema("study-manifest-1.json"))
     assert document["evaluations"][0]["failed"] is False
+
+
+def test_an_evaluation_reports_finite_or_missing_metrics():
+    """Ecosystem Phase 3, work package 3.4: every reported value, objective or not."""
+    ok = EvaluationResult(costs=[2.5], metrics={"flooding": 2.5, "nse_C11": None})
+    assert ok.metrics == {"flooding": 2.5, "nse_C11": None}
+    assert EvaluationResult(error="engine stopped").metrics == {}
+    with pytest.raises(ValidationError, match="metrics must be finite or null"):
+        EvaluationResult(costs=[2.5], metrics={"flooding": float("inf")})
+    with pytest.raises(ValidationError, match="at most 1000"):
+        EvaluationResult(costs=[2.5], metrics={f"m{i}": 1.0 for i in range(1001)})
+    record = {"evaluation": 1, "decisions": {}, "objectives": {"flooding": 2.5}}
+    assert StudyEvaluation.model_validate(record).metrics == {}  # Phase 2 manifests read
 
 
 def test_the_views_match_what_the_services_return():

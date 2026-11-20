@@ -163,6 +163,12 @@ def _checked(outcome, n_objectives: int) -> tuple[list[float] | None, str | None
     return [float(c) for c in costs], None
 
 
+def _metrics(outcome) -> dict[str, float | None]:
+    """Every reported value; one that is not finite is reported as missing, not refused."""
+    return {str(k): float(v) if v is not None and math.isfinite(float(v)) else None
+            for k, v in (getattr(outcome, "metrics", None) or {}).items()}
+
+
 def run(ctx: Context, composition: dict) -> HandlerResult:
     comp = _component(composition)
     parameters = ctx.spec.workload.parameters
@@ -208,11 +214,13 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
                 pairs = zip(chunk["candidates"], outcomes, strict=True)
                 for i, (vector, outcome) in enumerate(pairs):
                     costs, error = _checked(outcome, len(names))
+                    metrics = _metrics(outcome) if error is None else {}
                     record = {
                         "evaluation": chunk["first_evaluation"] + i,
                         "decisions": json_safe(split_vector(dims, vector)), "vector": vector,
                         "objectives": (dict(zip(names, costs, strict=True))
                                        if error is None else None),
+                        "metrics": metrics,
                         "steps": outcome.steps,
                         "error": error if outcome.error is None else outcome.error,
                         "study_id": study["study_id"], "chunk_id": chunk["chunk_id"],
@@ -220,7 +228,8 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
                         "seed": study.get("seed"),
                     }
                     fh.write(json.dumps(record) + "\n")
-                    results.append({"costs": costs, "steps": outcome.steps, "error": error})
+                    results.append({"costs": costs, "metrics": metrics, "steps": outcome.steps,
+                                    "error": error})
             _upload(ctx, rel, path)
             ack = gateway.call("/v1/evaluations/complete", {
                 "chunk_id": chunk["chunk_id"], "lease_number": chunk["lease_number"],
