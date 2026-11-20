@@ -6,7 +6,8 @@ same ``evaluations.jsonl`` and ``result.json`` in a folder the user can read,
 while every batch is evaluated by the study's pool on its compute target.
 
 The loop mirrors ``run_study`` line for line (``tests/integration/
-test_studies_engine.py`` checks that both produce the same records). It needs
+test_studies_engine.py`` checks that both produce the same records), and both write
+the same ``study-manifest.json`` apart from its ``runtime``. It needs
 ``openswmm_gymnasium`` with its ``spec`` extra, and ``platypus`` for the MOEAs.
 """
 
@@ -168,7 +169,8 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
     optimizer = make_optimizer(
         opt.algorithm, low, high, len(names), budget=opt.budget, seed=opt.seed,
         population_size=opt.population_size, grid_levels=opt.grid_levels,
-        batch=batch_size or DEFAULT_BATCH_PER_TASK * pool_size * workers)
+        batch=batch_size or DEFAULT_BATCH_PER_TASK * pool_size * workers,
+        candidates=opt.candidate_vectors(dims))
     evaluations: list[dict[str, Any]] = []
     try:
         with (output_dir / "evaluations.jsonl").open("w", encoding="utf-8") as log:
@@ -216,4 +218,16 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
     result = json_safe(result)
     (output_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n",
                                             encoding="utf-8")
+    from openswmm_gymnasium.optimize import manifest
+
+    revision = client.get_revision(revision_id)
+    lineage = client.study_manifest(study_id)
+    manifest.write_study_manifest(
+        output_dir,
+        manifest.study_definition(env_config, opt, dims,
+                                  manifest.model_inputs(revision["manifest"]["files"]), inp_path),
+        evaluations, result,
+        {"executor": "platform", "study_id": study_id, "run_id": lineage["run_id"],
+         "revision_id": revision_id, "revision_manifest_sha256": revision["manifest_sha256"],
+         "target_id": target_id, "lineage_manifest_sha256": lineage["manifest_sha256"]})
     return result

@@ -236,3 +236,34 @@ def test_nsga2_on_the_platform_matches_the_same_seeded_local_run(services, artif
                             read_jsonl(artifact_dir / "platform" / "evaluations.jsonl"))
     assert [p["decisions"] for p in result["pareto"]] == \
         [p["decisions"] for p in reference["pareto"]]
+
+
+def test_an_alternatives_study_has_the_same_manifest_locally_and_on_the_platform(
+        services, artifact_dir, server, make_token):
+    """Ecosystem Phase 2, work package 2.3: everything but ``runtime`` agrees, exactly."""
+    from openswmm_gymnasium.optimize import OptimizationConfig
+
+    from hydrocouple_platform.contracts.studies import StudyManifest
+
+    designs = [{"node_max_depth": [3.0, 3.0], "link_diameter": [1.0]},
+               {"node_max_depth": [2.0, 4.0], "link_diameter": [2.5]},
+               {"node_max_depth": [4.0, 2.0], "link_diameter": [0.5]}]
+    opt = OptimizationConfig(algorithm="alternatives", candidates=designs, seed=3, workers=0,
+                             on_failure="penalty")
+    config, _ = local_reference(opt, artifact_dir)
+    world = make_world(services, artifact_dir)
+    with Platform(services, world, server, artifact_dir, slots=2), \
+            PlatformClient(server, make_token("alice")) as client:
+        revision = upload(client, world, artifact_dir)
+        run_platform_study(config, opt, artifact_dir / "platform", client=client,
+                           project_id=world.project_id, revision_id=revision["revision_id"],
+                           target_id=world.target_id, inp_path="model/model.inp")
+
+    local, remote = (
+        StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
+        for side in ("local", "platform"))
+    assert [e.decisions for e in local.evaluations] == designs
+    assert local.comparable() == remote.comparable()
+    assert local.runtime["executor"] == "local" and remote.runtime["executor"] == "platform"
+    assert remote.runtime["revision_id"] == revision["revision_id"]
+    assert set(local.definition.model_inputs) == {"model/model.inp"}
