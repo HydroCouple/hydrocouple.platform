@@ -202,3 +202,50 @@ def test_work_survives_a_control_plane_outage(services, artifact_dir, server, ma
         view = client.wait_for_job(accepted["job_id"], timeout=120)
         assert view["state"] == "SUCCEEDED", view
         assert len(view["attempts"]) == 1
+
+
+def test_an_override_run_matches_a_run_of_the_edited_model(services, artifact_dir, server,
+                                                           make_token):
+    """swmm.simulation@2: a scenario of a revision is the edited, repackaged model's run."""
+    world = make_world(services, artifact_dir)
+    source = (DATA / "site_drainage_example.inp").read_text()
+    width = "S1               RainGage         J1               4.55     56.8     1587"
+    rough = "C2               J2               J11              526.00     0.016"
+    assert source.count(width) == source.count(rough) == 1
+    edited = artifact_dir / "edited" / "model.inp"
+    edited.parent.mkdir()
+    edited.write_text(source.replace(width, width.replace("1587", "300 "))
+                      .replace(rough, rough.replace("0.016", "0.02 ")))
+    overrides = [{"path": "subcatchment.width", "id": "S1", "value": 300},
+                 {"path": "link.roughness", "id": "C2", "value": 0.02}]
+    with Platform(services, world, server, artifact_dir), \
+            PlatformClient(server, make_token("alice")) as client:
+        base = client.upload_revision(
+            package_swmm_model(DATA / "site_drainage_example.inp", artifact_dir / "base"),
+            project_id=world.project_id, target_id=world.target_id)
+        changed = client.upload_revision(package_swmm_model(edited, artifact_dir / "package"),
+                                         project_id=world.project_id, target_id=world.target_id)
+        runs = {}
+        for name, revision, version, parameters in (
+                ("scenario", base, "2", {"overrides": overrides}),
+                ("edited", changed, "1", {}),
+                ("refused", base, "2", {"overrides": [
+                    {"path": "link.stats.max_flow", "id": "C2", "value": 1.0}]})):
+            accepted = client.submit_run({
+                "project_id": world.project_id, "revision_id": revision["revision_id"],
+                "workflow": "swmm.simulation", "workflow_version": version,
+                "target_id": world.target_id, "parameters": parameters},
+                idempotency_key=f"override-{name}")
+            runs[name] = (accepted, client.wait_for_job(accepted["job_id"], timeout=180))
+        assert runs["scenario"][1]["state"] == runs["edited"][1]["state"] == "SUCCEEDED"
+        outs = {name: client.download(runs[name][0]["run_id"], ["model.out"],
+                                      artifact_dir / "downloaded" / name)["model.out"]
+                for name in ("scenario", "edited")}
+        quality = client.results(runs["scenario"][0]["run_id"])["quality"]
+        refused = runs["refused"][1]
+
+    assert sha256_file(outs["scenario"]) == sha256_file(outs["edited"])
+    assert quality["overrides"] == [o | {"base_value": b} for o, b in zip(
+        overrides, [1587.0, 0.016], strict=True)]
+    assert refused["state"] == "FAILED" and refused["failure"]["exit_code"] == 10
+    assert "only writable" in refused["failure"]["diagnostics"]["message"]

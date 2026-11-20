@@ -68,6 +68,42 @@ SWMM_SIMULATION_V1 = Workflow(
     description="Run one SWMM model to completion with the OpenSWMM engine.",
 )
 
+SWMM_SIMULATION_V2 = Workflow(
+    name="swmm.simulation",
+    version="2",
+    job_class=JobClass.SINGLE,
+    handler="swmm.simulation",
+    allowed_components=frozenset({OPENSWMM_ENGINE_COMPONENT}),
+    parameters_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            **SWMM_SIMULATION_V1.parameters_schema["properties"],
+            # A scenario: element field values written after the model opens and before it
+            # initializes. The runner refuses a path the engine catalog does not list as a
+            # writable float, int or bool element field.
+            "overrides": {
+                "type": "array",
+                "maxItems": 10_000,
+                "default": [],
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["path", "id", "value"],
+                    "properties": {
+                        "path": {"type": "string", "pattern": r"^[a-z0-9_]+(\.[a-z0-9_]+)+$"},
+                        "id": {"type": "string", "minLength": 1},
+                        "value": {"type": ["number", "boolean"]},
+                    },
+                },
+            },
+        },
+    },
+    required_artifacts=SWMM_SIMULATION_V1.required_artifacts,
+    description="Run one SWMM model to completion with the OpenSWMM engine, with element "
+                "field overrides (a scenario of the revision).",
+)
+
 GYM_EVALUATE_V1 = Workflow(
     name="gym.evaluate",
     version="1",
@@ -100,6 +136,7 @@ GYM_EVALUATE_V1 = Workflow(
 
 REGISTRY: dict[tuple[str, str], Workflow] = {
     (SWMM_SIMULATION_V1.name, SWMM_SIMULATION_V1.version): SWMM_SIMULATION_V1,
+    (SWMM_SIMULATION_V2.name, SWMM_SIMULATION_V2.version): SWMM_SIMULATION_V2,
     (GYM_EVALUATE_V1.name, GYM_EVALUATE_V1.version): GYM_EVALUATE_V1,
 }
 
