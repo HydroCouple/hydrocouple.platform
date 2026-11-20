@@ -135,9 +135,13 @@ def test_the_summary_agrees_with_the_text_report(artifact_dir):
     jsonschema.validate(summary, _schema())
     report = (artifact_dir / "model.rpt").read_text(encoding="utf-8")
     tables = summary["tables"]
+    from openswmm.engine import catalog
     for section, columns in CATALOG_PATHS.items():
-        for column in columns:
-            assert tables[section]["columns"][column]["unit"], f"{section}.{column} has no unit"
+        for column, path in columns.items():
+            # A count (pump start-ups) has no unit in the catalog, so none is expected here.
+            declared = catalog.lookup(path).get("units")  # KeyError: the path is not catalogued
+            unit = tables[section]["columns"][column]["unit"]
+            assert bool(unit) == bool(declared), f"{section}.{column}: {unit!r} for {declared!r}"
 
     links = {row["link_id"]: row for row in tables["link_flow_summary"]["rows"]}
     reported = report_table(report, "Link Flow Summary")
