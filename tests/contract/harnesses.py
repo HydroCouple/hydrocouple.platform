@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import os
 import signal
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -83,12 +84,7 @@ class LocalPoolHarness:
         command line, so only those whose parent isn't one of them count."""
         workdir = str(self.work / attempt).encode()
         parents = {}
-        for pid in filter(str.isdigit, os.listdir("/proc")):
-            try:
-                args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
-                state, ppid = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[:2]
-            except OSError:
-                continue
+        for pid, ppid, state, args in _processes():
             if state != "Z" and _after(args, b"--attempt-id") == attempt.encode() \
                     and _after(args, b"--workdir") == workdir:
                 parents[pid] = ppid
@@ -125,6 +121,28 @@ class LocalPoolHarness:
         for handle in self.adapter.handles():
             self.adapter.cancel(handle)
             self.adapter.cleanup(handle)
+
+
+def _processes():
+    """(pid, parent pid, state, argv) of every process: from /proc where there is one (Linux),
+    otherwise from ps (macOS). ps joins argv with spaces, so this splits on them; the harness's
+    work paths contain none."""
+    if os.path.isdir("/proc"):
+        for pid in filter(str.isdigit, os.listdir("/proc")):
+            try:
+                args = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+                state, ppid = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[:2]
+            except OSError:
+                continue
+            yield pid, ppid, state, args
+        return
+    listing = subprocess.run(["ps", "-axww", "-o", "pid=,ppid=,stat=,command="],
+                             capture_output=True, text=True, check=True).stdout
+    for line in listing.splitlines():
+        fields = line.split(None, 3)
+        if len(fields) == 4:
+            pid, ppid, stat, command = fields
+            yield pid, ppid, stat[:1], [a.encode() for a in command.split()]
 
 
 def _after(args: list[bytes], flag: bytes) -> bytes | None:
