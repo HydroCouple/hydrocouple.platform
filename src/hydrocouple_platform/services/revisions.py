@@ -21,6 +21,7 @@ from ..db.models import (
     PlatformSession,
     Project,
     Revision,
+    Study,
     new_id,
 )
 from .auth import Principal
@@ -56,6 +57,20 @@ class RevisionServices(ServiceBase):
                 raise PlatformError(ErrorCode.NOT_FOUND, f"target {body.target_id} was not found")
             if target.revoked_at is not None:
                 raise PlatformError(ErrorCode.TARGET_REVOKED, "the target was revoked")
+            lineage = manifest.derived_from
+            if lineage is not None:  # a derived revision names a base and a study the caller sees
+                base = self.owned(s, Revision, lineage.revision_id, principal, "viewer")
+                if (base.project_id != project.id
+                        or base.manifest_sha256 != lineage.revision_manifest_sha256):
+                    raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                        f"derived_from names revision {lineage.revision_id} "
+                                        "with a manifest hash it does not have, or in another "
+                                        "project")
+                if lineage.study_id is not None:
+                    study = self.owned(s, Study, lineage.study_id, principal, "viewer")
+                    if study.revision_id != base.id:
+                        raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                            f"study {study.id} did not evaluate revision {base.id}")
             if body.session_id is not None:
                 session = self.owned(s, PlatformSession, body.session_id, principal, "viewer")
                 if session.project_id != project.id:
