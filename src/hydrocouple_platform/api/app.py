@@ -237,6 +237,10 @@ def create_app(
     def results(run_id: str, p: User) -> dict:
         return svc.get_results(p, run_id)
 
+    @app.get("/v1/runs/{run_id}/manifest")
+    def attempt_manifest(run_id: str, p: User) -> dict:
+        return svc.get_attempt_manifest(p, run_id)
+
     @app.post("/v1/runs/{run_id}/downloads", status_code=202)
     def downloads(run_id: str, body: DownloadBody, p: User) -> dict:
         return svc.request_downloads(p, run_id, body.paths)

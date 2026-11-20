@@ -490,6 +490,20 @@ class RunServices(ServiceBase):
                 "published_at": run.published_at.isoformat() if run.published_at else None,
             }
 
+    def get_attempt_manifest(self, principal: Principal, run_id: str) -> dict:
+        """The published attempt's manifest as the runner wrote it, with its checksum, so a
+        reader outside the control plane (the knowledge graph) can rebuild attempt.json."""
+        with self.tx() as s:
+            run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)
+            if run.canonical_attempt_id is None:
+                raise PlatformError(ErrorCode.NOT_READY, f"run {run.id} is not published",
+                                    retryable=True)
+            attempt = s.get(Attempt, run.canonical_attempt_id)
+            return {"run_id": run.id, "attempt_id": attempt.id,
+                    "attempt_manifest_sha256": attempt.manifest_sha256,
+                    "attempt_manifest": attempt.manifest}
+
     def request_downloads(self, principal: Principal, run_id: str, paths: list[str]) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")

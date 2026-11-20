@@ -161,6 +161,10 @@ class PlatformClient:
     def results(self, run_id: str) -> dict:
         return self._call("GET", f"/v1/runs/{run_id}/results")
 
+    def attempt_manifest(self, run_id: str) -> dict:
+        """The published attempt's manifest (``attempt_manifest``) and its checksum."""
+        return self._call("GET", f"/v1/runs/{run_id}/manifest")
+
     def wait_for_job(self, job_id: str, timeout: float = 600.0, interval: float = 0.5) -> dict:
         terminal = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "REJECTED"}
         deadline = time.monotonic() + timeout

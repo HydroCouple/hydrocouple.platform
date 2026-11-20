@@ -18,6 +18,7 @@ from hydrocouple_platform.agent import Agent, AgentClient
 from hydrocouple_platform.agent.adapters.local import LocalPoolAdapter
 from hydrocouple_platform.client import PlatformClient
 from hydrocouple_platform.contracts.jobs import EgressPolicy
+from hydrocouple_platform.contracts.manifests import sha256_of
 from hydrocouple_platform.packaging import package_swmm_model
 from hydrocouple_platform.runner.core import load_schema
 from hydrocouple_platform.storage import sha256_file
@@ -125,6 +126,10 @@ def test_package_run_and_download_with_numerical_parity(services, artifact_dir, 
         assert summary["schema"] == "hydrocouple.platform/run-summary/1"
         assert summary["tables"]["link_flow_summary"]["rows"]
         (artifact_dir / "results.json").write_text(json.dumps(results, indent=2))
+        published = client.attempt_manifest(accepted["run_id"])
+        assert sha256_of(published["attempt_manifest"]) == published[
+            "attempt_manifest_sha256"] == results["attempt_manifest_sha256"]
+        assert published["attempt_manifest"]["provenance"] == prov
 
     # Parity: the same model run directly with the engine, on the original files.
     direct = artifact_dir / "direct"
