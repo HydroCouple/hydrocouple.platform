@@ -74,6 +74,9 @@ class PlatformClient:
     def create_session(self, project_id: str, name: str) -> dict:
         return self._call("POST", f"/v1/projects/{project_id}/sessions", json={"name": name})
 
+    def list_sessions(self, project_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/projects/{project_id}/sessions")
+
     def create_agent_session(self, **body) -> dict:
         return self._call("POST", "/v1/agent-sessions", json=body)
 
