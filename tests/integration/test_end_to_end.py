@@ -245,7 +245,7 @@ def test_an_override_run_matches_a_run_of_the_edited_model(services, artifact_di
         refused = runs["refused"][1]
 
     assert sha256_file(outs["scenario"]) == sha256_file(outs["edited"])
-    assert quality["overrides"] == [o | {"base_value": b} for o, b in zip(
-        overrides, [1587.0, 0.016], strict=True)]
+    assert quality["overrides"] == [o | {"base_value": b, "unit": u} for o, b, u in zip(
+        overrides, [1587.0, 0.016], ["ft", "Manning's n"], strict=True)]
     assert refused["state"] == "FAILED" and refused["failure"]["exit_code"] == 10
     assert "only writable" in refused["failure"]["diagnostics"]["message"]

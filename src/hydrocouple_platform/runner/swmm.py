@@ -44,7 +44,8 @@ _SCALAR = {"float", "int", "bool"}
 
 
 def apply_overrides(solver, overrides: list[dict]) -> list[dict]:
-    """Write each ``{path, id, value}`` to the opened model; return them with their base values.
+    """Write each ``{path, id, value}`` to the opened model; return them with their base values
+    and their unit labels in the model's unit system.
 
     A path must be a writable ``float``, ``int`` or ``bool`` field of an element kind in the
     engine catalog. Anything else, an unknown element or a value of the wrong type is invalid
@@ -78,7 +79,9 @@ def apply_overrides(solver, overrides: list[dict]) -> list[dict]:
             setattr(owner, entry["name"], float(value) if entry["type"] == "float" else value)
         except Exception as exc:
             raise RunnerFailure(EXIT_INVALID_INPUT, f"{where}: {exc}") from None
-        applied.append({"path": path, "id": element, "value": value, "base_value": base})
+        unit = catalog.unit_label(entry.get("units"), solver.unit_system, solver.flow_units)
+        applied.append({"path": path, "id": element, "value": value, "base_value": base,
+                        "unit": unit})
     return applied
 
 

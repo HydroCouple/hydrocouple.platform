@@ -31,9 +31,11 @@ def test_writable_scalar_element_fields_are_written_with_their_base_values(solve
         {"path": "link.flap_gate", "id": "C2", "value": True},
     ])
     assert applied == [
-        {"path": "subcatchment.width", "id": "S1", "value": 300, "base_value": 1587.0},
-        {"path": "link.roughness", "id": "C2", "value": 0.02, "base_value": 0.016},
-        {"path": "link.flap_gate", "id": "C2", "value": True, "base_value": False},
+        {"path": "subcatchment.width", "id": "S1", "value": 300, "base_value": 1587.0,
+         "unit": "ft"},
+        {"path": "link.roughness", "id": "C2", "value": 0.02, "base_value": 0.016,
+         "unit": "Manning's n"},
+        {"path": "link.flap_gate", "id": "C2", "value": True, "base_value": False, "unit": None},
     ]
     assert solver.subcatchments["S1"].width == 300.0
     assert solver.links["C2"].roughness == 0.02 and solver.links["C2"].flap_gate is True
