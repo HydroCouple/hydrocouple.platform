@@ -14,7 +14,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Any, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    model_serializer,
+    model_validator,
+)
 
 from .jobs import Actor
 
@@ -77,6 +84,17 @@ class ManifestFile(_Model):
     )
 
 
+class DerivedFrom(_Model):
+    """The revision a revision was made from, and the study evaluation that chose it."""
+
+    revision_id: str
+    revision_manifest_sha256: str = Field(pattern=_SHA)
+    study_id: str | None = None
+    evaluation: int | None = Field(default=None, ge=1)
+    decisions: dict[str, list[float]] | None = Field(
+        default=None, description="The evaluation's design, by dimension key")
+
+
 class RevisionManifest(_Model):
     schema_: Literal["hydrocouple.platform/revision-manifest/1"] = Field(
         default=REVISION_MANIFEST_SCHEMA, alias="schema"
@@ -90,8 +108,18 @@ class RevisionManifest(_Model):
     findings: list[str] = Field(
         default_factory=list, description="Non-blocking observations recorded at packaging."
     )
+    derived_from: DerivedFrom | None = Field(
+        default=None, description="Lineage of a revision made from another; absent otherwise.")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    @model_serializer(mode="wrap")
+    def _no_lineage_no_key(self, handler):
+        # Absent, not null, so the manifests written before derived_from keep their digests.
+        data = handler(self)
+        if self.derived_from is None:
+            data.pop("derived_from", None)
+        return data
 
     def digest(self) -> str:
         return sha256_of(self.model_dump(mode="json", by_alias=True))

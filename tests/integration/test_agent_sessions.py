@@ -7,7 +7,13 @@ from sqlalchemy import select
 
 from hydrocouple_platform.client import PlatformClient
 from hydrocouple_platform.contracts.errors import ErrorCode, PlatformError
-from hydrocouple_platform.contracts.requests import AgentSessionCreate, Budget, TargetCreate
+from hydrocouple_platform.contracts.requests import (
+    AgentSessionCreate,
+    AgentSessionView,
+    ApprovalView,
+    Budget,
+    TargetCreate,
+)
 from hydrocouple_platform.db import transaction
 from hydrocouple_platform.db.models import AuditRecord
 from world import make_world, ready_revision
@@ -31,6 +37,7 @@ def agent(world, **budget):
 def test_actor_chain_reaches_the_job_spec_and_the_audit_log(world):
     revision = ready_revision(world)
     row, bot = agent(world)
+    AgentSessionView.model_validate({k: v for k, v in row.items() if k != "agent_session_token"})
     accepted = world.services.submit_run(
         bot, world.run_request(revision["revision_id"], tool_call_id="toolu_01"), "key-actor-1")
     world.services.dispatch()
@@ -66,6 +73,7 @@ def test_exceeding_the_run_budget_waits_for_a_person(world):
     assert err.value.code == ErrorCode.FORBIDDEN
     pending = world.services.list_approvals(world.admin, world.project_id)
     assert pending[0]["approval_id"] == second.approval_id
+    ApprovalView.model_validate(pending[0])  # the published approval-view-1 contract
     resolved = world.services.resolve_approval(world.admin, second.approval_id, True, "ok")
     assert resolved["job_state"] == "ACCEPTED"
     world.services.dispatch()

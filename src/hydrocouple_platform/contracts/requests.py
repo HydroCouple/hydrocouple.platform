@@ -37,6 +37,25 @@ class AgentSessionCreate(_Model):
     expires_in_seconds: int = Field(default=8 * 3600, gt=0, le=30 * 86400)
 
 
+class AgentSessionView(_Model):
+    """An agent session as its creator sees it (the credential is returned only once)."""
+
+    agent_session_id: str
+    expires_at: datetime
+    budget: Budget
+
+
+class ApprovalView(_Model):
+    """A request outside an agent session's budget, waiting for a person."""
+
+    approval_id: str
+    run_id: str | None = None
+    job_id: str | None = None
+    study_id: str | None = None
+    reasons: list[str]
+    expires_at: datetime
+
+
 class TargetCreate(_Model):
     name: str = Field(min_length=1, max_length=120)
     ownership_mode: str = Field(pattern="^(organization-owned|service-managed)$")

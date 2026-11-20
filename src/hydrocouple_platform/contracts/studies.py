@@ -103,6 +103,55 @@ class StudyCreate(_Model):
         return self
 
 
+STUDY_MANIFEST_SCHEMA = "hydrocouple.platform/study-manifest/1"
+
+
+class StudyEvaluation(_Model):
+    """One evaluated candidate, as ``evaluations.jsonl`` records it."""
+
+    evaluation: int = Field(ge=1)
+    decisions: dict[str, list[float]]
+    objectives: dict[str, float]
+    steps: int = 0
+    failed: bool = False
+    error: str | None = None
+
+
+class StudyDefinition(_Model):
+    """What a study evaluates and how it searches: the same wherever it runs."""
+
+    workflow: str
+    workflow_version: str
+    model_inputs: dict[str, str] = Field(
+        description="Package path to sha256 of every packaged file except composition.json, "
+                    "which records when it was packaged")
+    env_config: dict[str, Any] = Field(
+        description="The evaluator env config; its model path is the path in the package")
+    dimensions: list[Dimension]
+    objectives: list[Objective]
+    optimization: dict[str, Any]
+    seed: int | None = None
+
+
+class StudyManifest(_Model):
+    """A study's definition, every evaluation and its result, written by a local run and by
+    a platform run alike. Two executions of one study differ only in ``runtime``."""
+
+    schema_: Literal["hydrocouple.platform/study-manifest/1"] = Field(
+        default=STUDY_MANIFEST_SCHEMA, alias="schema")
+    definition: StudyDefinition
+    evaluations: list[StudyEvaluation]
+    result: dict[str, Any] = Field(description="Pareto set or best candidate, and counts")
+    runtime: dict[str, Any] = Field(
+        description="Where and how it ran: ids, hosts, workers, timings")
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def comparable(self) -> dict[str, Any]:
+        """Everything but ``runtime``: what two executions of the study must agree on."""
+        return self.model_dump(mode="json", by_alias=True, exclude={"runtime"})
+
+
 class BatchSubmit(_Model):
     candidates: list[list[float]] = Field(min_length=1, max_length=10_000)
 

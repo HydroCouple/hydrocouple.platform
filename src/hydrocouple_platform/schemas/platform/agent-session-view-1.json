@@ -1,0 +1,129 @@
+{
+  "$defs": {
+    "Budget": {
+      "additionalProperties": false,
+      "description": "A delegated budget for one AI agent session. ``None`` means no limit.",
+      "properties": {
+        "allowed_job_classes": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/JobClass"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Job Classes"
+        },
+        "allowed_targets": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Allowed Targets"
+        },
+        "max_concurrent_attempts": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Concurrent Attempts"
+        },
+        "max_estimated_spend": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Estimated Spend"
+        },
+        "max_evaluations": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Evaluations"
+        },
+        "max_runs": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Runs"
+        }
+      },
+      "title": "Budget",
+      "type": "object"
+    },
+    "JobClass": {
+      "enum": [
+        "single",
+        "evaluator-pool",
+        "multi-rank",
+        "analysis"
+      ],
+      "title": "JobClass",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/agent-session-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "An agent session as its creator sees it (the credential is returned only once).",
+  "properties": {
+    "agent_session_id": {
+      "title": "Agent Session Id",
+      "type": "string"
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "expires_at": {
+      "format": "date-time",
+      "title": "Expires At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "agent_session_id",
+    "expires_at",
+    "budget"
+  ],
+  "title": "AgentSessionView",
+  "type": "object"
+}

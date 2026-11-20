@@ -1,5 +1,70 @@
 {
   "$defs": {
+    "DerivedFrom": {
+      "additionalProperties": false,
+      "description": "The revision a revision was made from, and the study evaluation that chose it.",
+      "properties": {
+        "decisions": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "items": {
+                  "type": "number"
+                },
+                "type": "array"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The evaluation's design, by dimension key",
+          "title": "Decisions"
+        },
+        "evaluation": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evaluation"
+        },
+        "revision_id": {
+          "title": "Revision Id",
+          "type": "string"
+        },
+        "revision_manifest_sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Revision Manifest Sha256",
+          "type": "string"
+        },
+        "study_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Study Id"
+        }
+      },
+      "required": [
+        "revision_id",
+        "revision_manifest_sha256"
+      ],
+      "title": "DerivedFrom",
+      "type": "object"
+    },
     "FileRole": {
       "enum": [
         "composition",
@@ -75,6 +140,18 @@
       "format": "date-time",
       "title": "Created At",
       "type": "string"
+    },
+    "derived_from": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/DerivedFrom"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Lineage of a revision made from another; absent otherwise."
     },
     "files": {
       "items": {
