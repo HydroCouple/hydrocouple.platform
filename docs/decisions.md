@@ -209,6 +209,18 @@ An attempt the reconciler marked lost or timed out on the server's clock is not 
 
 **Limits.** Blob Storage soft delete keeps deleted blobs recoverable for the account's retention period, and the module sets 7 days.
 
+## 13. The run summary is an artifact, and its units come from the engine
+
+**Decision.** The simulation runner writes `summary.json` beside `model.rpt` and `model.out`: the tables of the engine's end-of-run report as data, from `openswmm.engine.get_report_snapshot`. Each column the engine catalog describes carries its catalog path and the unit the engine's catalog gives for the model's unit system. A column the catalog does not describe carries no unit. The contract is `RunSummary` (`run-summary-1.json`).
+
+**Why.** An agent, the GUI and the knowledge graph need what flooded and by how much without downloading and parsing a report, and a verifier needs a contract to check a stated number against.
+
+**Egress.** The summary names model elements. It is an artifact in the target's storage, reached through a grant like any other, and it is never sent in events. Under `metrics-only` it stays on site.
+
+**Not required.** `summary.json` is not in the workflow's required artifacts, so `swmm.simulation@1` keeps its version. A run whose summary cannot be built still publishes, with a warning event that says why.
+
+**Rules out.** Units written by the platform, and summary values in events or in the attempt manifest.
+
 ## Out of release 1
 
 - Checkpoint recovery for anything other than qualified single simulations. The engine's checkpoint session excludes callbacks, external drivers, live forcing, heat, quality and plugins, and composition `execution.mode: resume` is unimplemented.

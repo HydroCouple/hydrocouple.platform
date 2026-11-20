@@ -1,4 +1,4 @@
-"""Revision, attempt and provenance manifests.
+"""Revision, attempt and provenance manifests, and the run summary.
 
 The HydroCouple run manifest (``run-1.0.json``) is closed to additional
 properties, so the platform never extends it. The runner writes a valid run
@@ -21,6 +21,7 @@ from .jobs import Actor
 REVISION_MANIFEST_SCHEMA = "hydrocouple.platform/revision-manifest/1"
 ATTEMPT_MANIFEST_SCHEMA = "hydrocouple.platform/attempt-manifest/1"
 PROVENANCE_PROFILE = "hydrocouple.platform/provenance/1"
+RUN_SUMMARY_SCHEMA = "hydrocouple.platform/run-summary/1"
 
 _SHA = r"^[0-9a-f]{64}$"
 
@@ -150,7 +151,8 @@ class Provenance(_Model):
             f"u{i}": {"prov:activity": act, "prov:entity": f"hcp:input/{sha}"}
             for i, sha in enumerate(sorted(self.inputs.values()))
         }
-        return {
+        human = f"hcp:human/{self.actor.human_subject}"
+        doc: dict[str, Any] = {
             "prefix": {"hcp": "https://hydrocouple.org/platform/ns#"},
             "activity": {
                 act: {
@@ -160,12 +162,23 @@ class Provenance(_Model):
                 }
             },
             "entity": {f"hcp:input/{sha}": {"hcp:path": p} for p, sha in self.inputs.items()},
-            "agent": {f"hcp:human/{self.actor.human_subject}": {}},
+            "agent": {human: {}},
             "used": used,
-            "wasAssociatedWith": {
-                "w0": {"prov:activity": act, "prov:agent": f"hcp:human/{self.actor.human_subject}"}
-            },
+            "wasAssociatedWith": {"w0": {"prov:activity": act, "prov:agent": human}},
         }
+        if self.actor.agent_session_id:
+            # An AI agent asked for the work, acting for the person who started its session.
+            session = f"hcp:agent-session/{self.actor.agent_session_id}"
+            described = {"hcp:client": self.actor.agent_client,
+                         "hcp:clientVersion": self.actor.agent_client_version,
+                         "hcp:model": self.actor.model,
+                         "hcp:toolCall": self.actor.tool_call_id}
+            doc["agent"][session] = {k: v for k, v in described.items() if v is not None}
+            doc["wasAssociatedWith"]["w1"] = {"prov:activity": act, "prov:agent": session}
+            doc["actedOnBehalfOf"] = {
+                "d0": {"prov:delegate": session, "prov:responsible": human, "prov:activity": act}
+            }
+        return doc
 
 
 class AttemptManifest(_Model):
@@ -187,3 +200,47 @@ class AttemptManifest(_Model):
         if len(set(paths)) != len(paths):
             raise ValueError("the attempt manifest lists an artifact path twice")
         return self
+
+    def to_prov(self) -> dict[str, Any]:
+        """The provenance in PROV-JSON terms, each artifact an entity the attempt generated."""
+        doc = self.provenance.to_prov()
+        act = f"hcp:attempt/{self.provenance.attempt_id}"
+        doc["wasGeneratedBy"] = {}
+        for i, a in enumerate(self.artifacts):
+            entity = f"hcp:artifact/{a.sha256}"
+            doc["entity"][entity] = {"hcp:path": a.path, "hcp:kind": a.kind.value}
+            doc["wasGeneratedBy"][f"g{i}"] = {"prov:entity": entity, "prov:activity": act}
+        return doc
+
+
+class SummaryColumn(_Model):
+    """What one column of a summary table reports."""
+
+    catalog_path: str | None = Field(
+        default=None, description="Engine catalog path of the quantity, where it has one.")
+    unit: str | None = Field(
+        default=None,
+        description="Unit as the engine labels it for this model; absent when it declares none.")
+
+
+class SummaryTable(_Model):
+    columns: dict[str, SummaryColumn] = Field(default_factory=dict)
+    rows: list[dict[str, float | int | str | None]]
+
+
+class RunSummary(_Model):
+    """The engine's end-of-run report as data: the tables of the text report.
+
+    It names model elements, so it is an artifact in the target's storage and is
+    subject to the target's egress policy; it is never sent in events.
+    """
+
+    schema_: Literal["hydrocouple.platform/run-summary/1"] = Field(
+        default=RUN_SUMMARY_SCHEMA, alias="schema"
+    )
+    engine: str | None = None
+    unit_system: str | None = None
+    flow_units: str | None = None
+    tables: dict[str, SummaryTable]
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)

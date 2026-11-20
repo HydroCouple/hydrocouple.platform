@@ -116,10 +116,14 @@ def test_package_run_and_download_with_numerical_parity(services, artifact_dir, 
         assert prov["inputs"]["model/rain/2-yr storm.dat"] == sha256_file(
             DATA / "external_rain" / "rain" / "2-yr storm.dat")
         assert prov["runtime"]["engine"]
-        downloaded = client.download(accepted["run_id"], ["model.out", "run.json", "model.rpt"],
+        downloaded = client.download(accepted["run_id"],
+                                     ["model.out", "run.json", "model.rpt", "summary.json"],
                                      artifact_dir / "downloaded")
         jsonschema.validate(json.loads(downloaded["run.json"].read_text()),
                             load_schema("run-1.0.json"))
+        summary = json.loads(downloaded["summary.json"].read_text())
+        assert summary["schema"] == "hydrocouple.platform/run-summary/1"
+        assert summary["tables"]["link_flow_summary"]["rows"]
         (artifact_dir / "results.json").write_text(json.dumps(results, indent=2))
 
     # Parity: the same model run directly with the engine, on the original files.

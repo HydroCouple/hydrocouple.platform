@@ -22,7 +22,14 @@ from hydrocouple_platform.contracts.jobs import (
     Runtime,
     Workload,
 )
-from hydrocouple_platform.contracts.manifests import check_safe_path, sha256_of
+from hydrocouple_platform.contracts.manifests import (
+    ArtifactEntry,
+    AttemptManifest,
+    Provenance,
+    RuntimeVersions,
+    check_safe_path,
+    sha256_of,
+)
 from hydrocouple_platform.contracts.states import (
     ATTEMPT_TERMINAL,
     ATTEMPT_TRANSITIONS,
@@ -182,6 +189,53 @@ class TestCapabilities:
 class TestManifests:
     def test_digest_ignores_key_order(self):
         assert sha256_of({"a": 1, "b": [1, 2]}) == sha256_of({"b": [1, 2], "a": 1})
+
+
+def attempt_manifest(actor: Actor) -> AttemptManifest:
+    now = datetime(2026, 11, 20, tzinfo=timezone.utc)
+    return AttemptManifest(
+        run_manifest_sha256="a" * 64, status="completed",
+        artifacts=[ArtifactEntry(path="run.json", sha256="a" * 64, size=10,
+                                 kind="run_manifest", format="json"),
+                   ArtifactEntry(path="summary.json", sha256="b" * 64, size=20,
+                                 kind="summary", format="json")],
+        provenance=Provenance(
+            run_id="run_1", job_id="job_1", attempt_id="att_1", attempt_number=1,
+            revision_id="rev_1", revision_manifest_sha256="c" * 64,
+            composition_sha256="d" * 64, inputs={"model/model.inp": "e" * 64},
+            workflow="swmm.simulation", workflow_version="1", parameters={}, threads=1,
+            runtime=RuntimeVersions(platform="0", python="3"), actor=actor,
+            started_at=now, finished_at=now))
+
+
+class TestProvenance:
+    def test_a_person_alone_is_the_only_agent(self):
+        prov = attempt_manifest(Actor(human_subject="alice")).to_prov()
+        assert list(prov["agent"]) == ["hcp:human/alice"]
+        assert "actedOnBehalfOf" not in prov
+
+    def test_an_agent_session_acts_on_behalf_of_the_person(self):
+        actor = Actor(human_subject="alice", agent_session_id="ags_1", agent_client="openswmm.mcp",
+                      model="m", tool_call_id="call_7")
+        prov = attempt_manifest(actor).to_prov()
+        session = "hcp:agent-session/ags_1"
+        assert prov["agent"][session] == {"hcp:client": "openswmm.mcp", "hcp:model": "m",
+                                          "hcp:toolCall": "call_7"}
+        assert prov["actedOnBehalfOf"]["d0"] == {
+            "prov:delegate": session, "prov:responsible": "hcp:human/alice",
+            "prov:activity": "hcp:attempt/att_1"}
+        assert {w["prov:agent"] for w in prov["wasAssociatedWith"].values()} == {
+            session, "hcp:human/alice"}
+
+    def test_every_artifact_is_generated_by_the_attempt(self):
+        prov = attempt_manifest(Actor(human_subject="alice")).to_prov()
+        generated = {g["prov:entity"] for g in prov["wasGeneratedBy"].values()}
+        assert generated == {"hcp:artifact/" + "a" * 64, "hcp:artifact/" + "b" * 64}
+        assert all(g["prov:activity"] == "hcp:attempt/att_1"
+                   for g in prov["wasGeneratedBy"].values())
+        assert prov["entity"]["hcp:artifact/" + "b" * 64] == {"hcp:path": "summary.json",
+                                                              "hcp:kind": "summary"}
+        assert "hcp:input/" + "e" * 64 in prov["entity"]  # the inputs are still there
 
 
 class TestEgress:

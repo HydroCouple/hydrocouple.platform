@@ -9,10 +9,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..contracts.manifests import ArtifactKind, check_safe_path
+from ..contracts.manifests import ArtifactKind, canonical_json, check_safe_path
 from ..workflows import OPENSWMM_ENGINE_COMPONENT
 from . import EXIT_ENGINE, EXIT_INVALID_INPUT, EXIT_MISSING_DEPENDENCY, RunnerFailure
 from .core import Context, HandlerResult
+from .summary import engine_summary
 
 
 def _component(composition: dict) -> dict:
@@ -53,6 +54,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
     active = (EngineState.STARTED, EngineState.RUNNING)
     solver = Solver(str(model), str(rpt), str(out))
     errors: list[str] = []
+    summary = None
     try:
         try:
             solver.open()
@@ -98,6 +100,10 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
             "threads": threads,
         }
         solver.end()
+        try:
+            summary = engine_summary(solver, getattr(openswmm, "__version__", None))
+        except Exception as exc:  # the run itself is good; say why it has no summary
+            ctx.events.emit("warning", "summary", f"no run summary: {exc}")
         solver.report()
     except RunnerFailure:
         raise
@@ -113,6 +119,10 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
 
     artifacts = [("model.rpt", ArtifactKind.REPORT, "swmm_rpt"),
                  ("model.out", ArtifactKind.BINARY_OUTPUT, "swmm_out")]
+    if summary is not None:
+        (ctx.outputs / "summary.json").write_bytes(
+            canonical_json(summary.model_dump(mode="json", by_alias=True)))
+        artifacts.append(("summary.json", ArtifactKind.SUMMARY, "json"))
     # Files the model saved next to itself (e.g. [FILES] SAVE HOTSTART) are outputs too.
     for path in sorted(p for p in model.parent.rglob("*") if p.is_file() and p not in before):
         rel = "saved/" + path.relative_to(model.parent).as_posix()

@@ -31,3 +31,5 @@ First implementation of the cloud execution plan (milestones M1 to M3).
   - a service that offers only fixed CPU and memory pairs (`task_sizes`) runs a request on the smallest that fits, and refuses it when none does;
   - an adapter that hasn't declared where scratch lives, or caps runtime without saying how long, rejects the requests that depend on it.
 - Runners inherit none of the agent's `HCP_*` settings, so they never hold the agent credential; the evaluator's gateway token reaches it on stdin.
+- A run summary: `swmm.simulation@1` writes `summary.json` beside the report and binary output, the engine's end-of-run report as data (continuity, flooded nodes, storage, links, pumps, subcatchments). Each column the engine catalog describes carries its catalog path and the unit the engine declares for the model. The contract is `RunSummary`, published as `run-summary-1.json`. The summary is an artifact in the target's storage, not a required one, and is never sent in events.
+- Provenance in PROV-JSON names the AI agent session as an agent acting on behalf of the person, and `AttemptManifest.to_prov()` adds every artifact as an entity the attempt generated.

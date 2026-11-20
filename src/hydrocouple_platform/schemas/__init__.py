@@ -25,6 +25,7 @@ CONTRACTS = {
     "event-1.json": agent.Event,
     "revision-manifest-1.json": manifests.RevisionManifest,
     "attempt-manifest-1.json": manifests.AttemptManifest,
+    "run-summary-1.json": manifests.RunSummary,
     "run-request-1.json": requests.RunRequest,
     "run-accepted-1.json": requests.RunAccepted,
     "estimate-1.json": requests.Estimate,
