@@ -457,6 +457,14 @@ def test_approved_proposals_are_applied_by_the_next_cycle_and_recorded(
         (graph / "proposals.json").write_text(json.dumps(proposals, indent=2) + "\n")
 
     assert view["state"] == "COMPLETED", view
+    for c in view["history"]:  # one sample every 10 minutes, to the hour's horizon
+        forecast = json.loads((graph / "attempts" / str(c["number"]) / "forecast.json").read_text())
+        issued = datetime.fromisoformat(forecast["issued_at"])
+        (series,) = forecast["series"]
+        assert series["times"] == [(issued + timedelta(minutes=10 * k)).isoformat()
+                                   for k in range(1, 7)]
+        assert all(datetime.fromisoformat(p["effective_from"]) < issued + timedelta(hours=1)
+                   for p in proposals if p["run_id"] == c["run_id"])
     last_cycle = view["history"][-1]["run_id"]
     approved = [p for p in proposals if p["state"] in ("APPROVED", "APPLIED")]
     assert all(p["decided_by"] == "alice" for p in approved)

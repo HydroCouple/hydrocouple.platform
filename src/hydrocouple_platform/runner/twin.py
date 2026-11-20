@@ -222,15 +222,16 @@ def _forecast(ctx: Context, model: Path, p: dict, cycle_end: datetime) -> dict:
         _start(solver, "the forecast")
         if policy is not None:
             decide(cycle_end)
-        due = cycle_end + every
+        due, end = cycle_end + every, cycle_end + horizon
         while int(solver.state) in active:
             solver.step()
-            running = int(solver.state) in active
-            if solver.current_datetime >= due - timedelta(milliseconds=1) or not running:
+            # One sample per sample time up to the horizon: the step that ends the run does not
+            # advance the clock, so it is no sample of its own.
+            if due <= end and solver.current_datetime >= due - timedelta(milliseconds=1):
                 for s in series:
                     s["times"].append(due.isoformat())
                     s["values"].append(_read(solver, s["path"], s["element_id"]))
-                if policy is not None and running:
+                if policy is not None and due < end:
                     decide(due)
                 due += every
         solver.end()
