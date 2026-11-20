@@ -46,7 +46,7 @@ def study_request(env_config, opt, *, project_id: str, revision_id: str, target_
 
     dims = design_dimensions(env_config)
     low, high = flat_bounds(dims)
-    labels = [label for d in dims for label in d.labels]
+    labels = [(label, d.choices) for d in dims for label in d.labels]
     payload = env_config.model_dump(mode="json")
     payload.update(inp_path=inp_path, rpt_path=None, out_path=None)
     parameters: dict[str, Any] = {"env_config": payload,
@@ -62,8 +62,9 @@ def study_request(env_config, opt, *, project_id: str, revision_id: str, target_
     return StudyCreate(
         project_id=project_id, session_id=session_id, revision_id=revision_id,
         target_id=target_id, parameters=parameters,
-        dimensions=[Dimension(label=label, low=float(lo), high=float(hi))
-                    for label, lo, hi in zip(labels, low, high, strict=True)],
+        dimensions=[Dimension(label=label, low=float(lo), high=float(hi),
+                              choices=None if choices is None else list(choices))
+                    for (label, choices), lo, hi in zip(labels, low, high, strict=True)],
         objectives=[Objective(name=n, direction=d)
                     for n, d in objective_directions(env_config).items()],
         seed=opt.seed, on_failure=opt.on_failure, failure_penalty=opt.failure_penalty,
@@ -148,11 +149,11 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
         PLATYPUS_ALGORITHMS,
         StudyCancelled,
         assemble_result,
+        decision_values,
         design_dimensions,
         flat_bounds,
         make_optimizer,
         objective_directions,
-        split_vector,
     )
     from openswmm_gymnasium.spec.envs import json_safe
 
@@ -188,7 +189,7 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
                 for vector, outcome in zip(batch, outcomes, strict=True):
                     record: dict[str, Any] = {
                         "evaluation": len(evaluations) + 1,
-                        "decisions": json_safe(split_vector(dims, vector)),
+                        "decisions": json_safe(decision_values(dims, vector)),
                     }
                     if outcome.error is None:
                         costs = outcome.costs

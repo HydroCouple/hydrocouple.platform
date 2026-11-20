@@ -65,11 +65,23 @@ class Dimension(_Model):
     label: str = Field(min_length=1, max_length=200)
     low: float
     high: float
+    choices: list[float] | None = Field(
+        default=None, min_length=2, max_length=10_000,
+        description="For a discrete component, the values it chooses from: the component "
+                    "lies in [0, len(choices)] and its integer part (at most the last index) "
+                    "picks the value an evaluation records")
 
     @model_validator(mode="after")
     def _bounds(self) -> Dimension:
         if not (math.isfinite(self.low) and math.isfinite(self.high)) or self.low > self.high:
             raise ValueError(f"dimension {self.label}: bounds must be finite with low <= high")
+        if self.choices is not None:
+            if not all(math.isfinite(c) for c in self.choices) or \
+                    len(set(self.choices)) != len(self.choices):
+                raise ValueError(f"dimension {self.label}: choices must be finite and distinct")
+            if (self.low, self.high) != (0.0, float(len(self.choices))):
+                raise ValueError(f"dimension {self.label}: a discrete component lies in "
+                                 f"[0, {len(self.choices)}]")
         return self
 
 

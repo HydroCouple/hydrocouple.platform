@@ -100,6 +100,24 @@
       "additionalProperties": false,
       "description": "One component of the decision vector, with the decision key it belongs to.",
       "properties": {
+        "choices": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 10000,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a discrete component, the values it chooses from: the component lies in [0, len(choices)] and its integer part (at most the last index) picks the value an evaluation records",
+          "title": "Choices"
+        },
         "high": {
           "title": "High",
           "type": "number"

@@ -387,3 +387,43 @@ def test_an_event_study_scores_every_storm_locally_and_on_the_platform(
     assert set(local_manifest.definition.model_inputs) == \
         {"model/model.inp"} | {f"model/rain/{name}.csv" for name in storms}
     assert local_manifest.comparable() == remote_manifest.comparable()
+
+
+def test_a_discrete_choice_survives_a_local_and_a_platform_study(services, artifact_dir, server,
+                                                                  make_token):
+    """Ecosystem Phase 3, work package 3.6: optimizers draw a choice's index; the study
+    records the value chosen, and the manifests (with the choices) agree."""
+    from openswmm_gymnasium.optimize import OptimizationConfig
+
+    from hydrocouple_platform.contracts.studies import StudyManifest
+
+    factories = [
+        {"kind": "field_choice",
+         "params": {"path": "link.barrels", "ids": ["OUT"], "choices": [1, 2, 3]}},
+        {"kind": "field_choice",
+         "params": {"path": "link.roughness", "ids": ["OUT"], "choices": [0.011, 0.013, 0.024]}},
+        {"kind": "node_max_depth",
+         "params": {"node_ids": ["T1", "T2"], "low": 2.0, "high": 4.0}}]
+    opt = OptimizationConfig(algorithm="random_search", budget=8, seed=13, workers=0,
+                             on_failure="penalty")
+    config, _ = local_reference(opt, artifact_dir, design_factories=factories)
+    world = make_world(services, artifact_dir)
+    with Platform(services, world, server, artifact_dir, slots=2), \
+            PlatformClient(server, make_token("alice")) as client:
+        revision = upload(client, world, artifact_dir)
+        run_platform_study(config, opt, artifact_dir / "platform", client=client,
+                           project_id=world.project_id, revision_id=revision["revision_id"],
+                           target_id=world.target_id, inp_path="model/model.inp", batch_size=3)
+
+    local = read_jsonl(artifact_dir / "local" / "evaluations.jsonl")
+    assert_same_evaluations(local, read_jsonl(artifact_dir / "platform" / "evaluations.jsonl"))
+    barrels = {r["decisions"]["link.barrels"][0] for r in local}
+    assert barrels <= {1.0, 2.0, 3.0} and len(barrels) > 1
+    assert {r["decisions"]["link.roughness"][0] for r in local} <= {0.011, 0.013, 0.024}
+    local_manifest, remote_manifest = (
+        StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
+        for side in ("local", "platform"))
+    first = local_manifest.definition.dimensions[0]
+    assert (first.label, first.low, first.high, first.choices) == \
+        ("field_choice:OUT", 0.0, 3.0, [1.0, 2.0, 3.0])
+    assert local_manifest.comparable() == remote_manifest.comparable()

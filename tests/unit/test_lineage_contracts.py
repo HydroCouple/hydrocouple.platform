@@ -19,6 +19,7 @@ from hydrocouple_platform.contracts.manifests import (
 )
 from hydrocouple_platform.contracts.requests import AgentSessionView, ApprovalView
 from hydrocouple_platform.contracts.studies import (
+    Dimension,
     EvaluationResult,
     StudyEvaluation,
     StudyManifest,
@@ -87,6 +88,19 @@ def test_an_evaluation_reports_finite_or_missing_metrics():
         EvaluationResult(costs=[2.5], metrics={f"m{i}": 1.0 for i in range(1001)})
     record = {"evaluation": 1, "decisions": {}, "objectives": {"flooding": 2.5}}
     assert StudyEvaluation.model_validate(record).metrics == {}  # Phase 2 manifests read
+
+
+def test_a_discrete_dimension_lies_over_its_choices_indices():
+    """Ecosystem Phase 3, work package 3.6."""
+    ok = Dimension(label="field_choice:OUT", low=0.0, high=3.0, choices=[1.0, 2.0, 3.0])
+    assert ok.choices == [1.0, 2.0, 3.0]
+    assert Dimension(label="w", low=100.0, high=900.0).choices is None
+    for bad, message in (({"high": 2.0}, "lies in \\[0, 3\\]"),
+                         ({"choices": [1.0, 1.0, 3.0]}, "finite and distinct"),
+                         ({"choices": [1.0]}, "at least 2")):
+        fields = {"label": "c", "low": 0.0, "high": 3.0, "choices": [1.0, 2.0, 3.0]} | bad
+        with pytest.raises(ValidationError, match=message):
+            Dimension(**fields)
 
 
 def test_the_views_match_what_the_services_return():

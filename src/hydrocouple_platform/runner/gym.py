@@ -99,12 +99,14 @@ def _env(ctx: Context, parameters: dict[str, Any]):
 
     study = parameters["study"]
     low, high = flat_bounds(dims)
-    labels = [label for d in dims for label in d.labels]
+    components = [(label, None if d.choices is None else list(d.choices))
+                  for d in dims for label in d.labels]
     expected = study["dimensions"]
-    if len(expected) != len(labels) or any(
-            e["label"] != label or not math.isclose(e["low"], lo, abs_tol=1e-12)
+    if len(expected) != len(components) or any(
+            e["label"] != label or e.get("choices") != choices
+            or not math.isclose(e["low"], lo, abs_tol=1e-12)
             or not math.isclose(e["high"], hi, abs_tol=1e-12)
-            for e, label, lo, hi in zip(expected, labels, low, high, strict=True)):
+            for e, (label, choices), lo, hi in zip(expected, components, low, high, strict=True)):
         raise RunnerFailure(EXIT_INVALID_INPUT,
                             "the study's dimensions do not match the env config's search space")
     directions = objective_directions(config)
@@ -180,7 +182,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
                             "gym.evaluate runs only as a study's pool task, through its agent")
     config, dims = _env(ctx, parameters)
 
-    from openswmm_gymnasium.optimize import WorkerPool, split_vector
+    from openswmm_gymnasium.optimize import WorkerPool, decision_values
     from openswmm_gymnasium.spec.envs import json_safe
 
     names = [o["name"] for o in study["objectives"]]
@@ -217,7 +219,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
                     metrics = _metrics(outcome) if error is None else {}
                     record = {
                         "evaluation": chunk["first_evaluation"] + i,
-                        "decisions": json_safe(split_vector(dims, vector)), "vector": vector,
+                        "decisions": json_safe(decision_values(dims, vector)), "vector": vector,
                         "objectives": (dict(zip(names, costs, strict=True))
                                        if error is None else None),
                         "metrics": metrics,
