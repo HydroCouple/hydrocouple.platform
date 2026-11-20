@@ -149,8 +149,13 @@ def test_the_summary_agrees_with_the_text_report(artifact_dir):
     flooded = {row["node_id"]: row for row in tables["node_flooding"]["rows"]}
     reported = report_table(report, "Node Flooding Summary")
     assert {r[0] for r in reported} == set(flooded)
-    seconds = {"s": 1.0, "h": 3600.0}[tables["node_flooding"]["columns"]["time_flooded"]["unit"]]
-    for name, hours, rate, *_ in reported:
+    columns = tables["node_flooding"]["columns"]
+    seconds = {"s": 1.0, "h": 3600.0}[columns["time_flooded"]["unit"]]
+    # The report prints flood volume in 10^6 gal (US) or 10^6 L (SI).
+    millions = {"ft3": 7.48052e-6, "m3": 1e-3}[columns["total_flood_volume"]["unit"]]
+    for name, hours, rate, _days, _time, volume, *_ in reported:
         flooded_hours = flooded[name]["time_flooded"] * seconds / 3600
         assert flooded_hours == pytest.approx(float(hours), abs=0.006), name
         assert flooded[name]["max_overflow_rate"] == pytest.approx(float(rate), abs=0.006), name
+        flood_volume = flooded[name]["total_flood_volume"] * millions
+        assert flood_volume == pytest.approx(float(volume), abs=0.0006), name
