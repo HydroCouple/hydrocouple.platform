@@ -8,6 +8,10 @@ Durable, bring-your-own-compute execution of SWMM simulations and HydroCouple co
 
 The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decisions.md). The full plan lives in `openswmm.gui/workplans/SWMM_CLOUD_EXECUTION_PLATFORM_PLAN_2026-10-15.md`.
 
+[Execution platform guide](docs/index.md) · [First local run](docs/first-run.md) · [Lifecycle and recovery](docs/execution.md)
+
+Build the guide with `python -m pip install -e ".[docs]"` and `python -m sphinx -W -b html docs build/docs`.
+
 ## Status
 
 | Milestone | State |
