@@ -56,10 +56,9 @@ def cycle(cycle_end: datetime) -> dict:
 @pytest.fixture
 def engine_continues():
     """Skip unless the installed engine continues into a model with longer series."""
-    pytest.importorskip("openswmm.engine")
-    from openswmm.engine import capabilities
-
-    if "continue_extended_forcing" not in capabilities()["checkpoints"]:
+    engine = pytest.importorskip("openswmm.engine")
+    capabilities = getattr(engine, "capabilities", None)  # the published 6.0.0a4.dev1 has none
+    if capabilities is None or "continue_extended_forcing" not in capabilities()["checkpoints"]:
         pytest.skip("the installed openswmm engine cannot continue into extended forcing")
 
 
