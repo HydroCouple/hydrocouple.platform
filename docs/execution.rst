@@ -43,7 +43,7 @@ leasable again. The next lease carries a higher fencing token.
 
 The attempt manifest records the published execution. Read it with
 ``client.attempt_manifest(run_id)`` and match its checksum to
-``client.results(run_id)["attempt_manifest_sha256"]``. A repeated completion acknowledgement
+``client.results(run_id)["attempt_manifest_sha256"]``. A repeated completion acknowledgment
 leaves the canonical result intact.
 
 Choose an adapter

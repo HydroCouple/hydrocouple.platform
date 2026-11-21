@@ -139,7 +139,7 @@ class AgentServices(ServiceBase):
         s.execute(query)
 
     def _to_stop(self, s: Session, target_id: str, held: set[str]) -> list[str]:
-        """Held attempts the agent must stop: cancelled, superseded, ended or unknown."""
+        """Held attempts the agent must stop: canceled, superseded, ended or unknown."""
         if not held:
             return []
         rows = {a.id: (a, j) for a, j in s.execute(
@@ -488,7 +488,7 @@ class AgentServices(ServiceBase):
             raise ValueError(f"unknown outbox topic {row.topic!r}")
         job = s.get(Job, row.payload["job_id"], with_for_update=True)
         if job is None or job.state != JobState.ACCEPTED.value:
-            return  # cancelled or already dispatched: nothing to do
+            return  # canceled or already dispatched: nothing to do
         spec = JobSpec.model_validate(job.spec)
         self._set_state(job, JobState.LEASABLE)
         job.leasable_at = self.now()
@@ -552,7 +552,7 @@ class AgentServices(ServiceBase):
                                   Job.queue_deadline_at < now)
                 .limit(limit).with_for_update(skip_locked=True)):
                 if job.state != JobState.LEASABLE.value:
-                    continue  # its study ended earlier in this pass and cancelled it
+                    continue  # its study ended earlier in this pass and canceled it
                 self._set_state(job, JobState.TIMED_OUT, failure={
                     "class": FailureClass.CAPACITY.value,
                     "reason": "no capacity claimed the job before its queue deadline"})

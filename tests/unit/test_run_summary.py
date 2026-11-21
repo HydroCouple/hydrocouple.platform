@@ -139,7 +139,7 @@ def test_the_summary_agrees_with_the_text_report(artifact_dir):
     for section, columns in CATALOG_PATHS.items():
         for column, path in columns.items():
             # A count (pump start-ups) has no unit in the catalog, so none is expected here.
-            declared = catalog.lookup(path).get("units")  # KeyError: the path is not catalogued
+            declared = catalog.lookup(path).get("units")  # KeyError: the path is not cataloged
             unit = tables[section]["columns"][column]["unit"]
             assert bool(unit) == bool(declared), f"{section}.{column}: {unit!r} for {declared!r}"
 

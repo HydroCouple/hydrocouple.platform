@@ -159,7 +159,7 @@ credential is required too, a stolen token alone is useless, and a long outage n
 finished work.
 
 The agent reports which attempts it holds on every poll. The control plane answers with the ones
-to stop (cancelled, superseded, ended or unknown), and re-offers any lease whose response the
+to stop (canceled, superseded, ended or unknown), and re-offers any lease whose response the
 agent never received. The server also enforces each attempt's execution timeout itself.
 
 Publication is one transaction: it sets the run's canonical attempt only if none is set. Outputs

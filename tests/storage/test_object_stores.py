@@ -12,7 +12,7 @@ A backend whose emulator is missing is skipped. The emulators' logs and data go 
 Two things the emulators do not check, which the real services do, are noted where
 they matter:
 - whether S3 refuses content that does not match a grant's SHA-256;
-- whether Cloud Storage honours a grant's create-only condition.
+- whether Cloud Storage honors a grant's create-only condition.
 The agent's verification of size and SHA-256 is what the platform relies on either
 way, and the tests check that it catches wrong content.
 """

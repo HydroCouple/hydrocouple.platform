@@ -91,7 +91,7 @@ class PlatformPool:
                                           idempotency_key=f"{self.study_id}-b{self._batches}")
         view = self._client.wait_for_batch(self.study_id, batch["batch_id"], self._timeout,
                                            should_stop=should_stop)
-        # Still queued only when should_stop() said so; cancelled when the study was.
+        # Still queued only when should_stop() said so; canceled when the study was.
         if view["state"] in ("QUEUED", "CANCELLED"):
             raise StudyCancelled()
         if view["state"] == "FAILED":

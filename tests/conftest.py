@@ -185,7 +185,7 @@ def server(settings, services):
 # Set HCP_TEST_KUBECONFIG to a cluster's kubeconfig. The adapter contract tests also need
 # HCP_TEST_K8S_CONTRACT_IMAGE: the stand-in runner built from tests/contract/contract-runner, by
 # digest, in a registry the cluster can pull from. Each test module gets its own namespace,
-# labelled for the "restricted" Pod Security Standard, and deletes it afterwards.
+# labeled for the "restricted" Pod Security Standard, and deletes it afterwards.
 
 
 @pytest.fixture(scope="module")

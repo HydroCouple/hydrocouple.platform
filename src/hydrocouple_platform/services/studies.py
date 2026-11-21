@@ -438,7 +438,7 @@ class StudyServices(ServiceBase):
         for batch in s.scalars(select(StudyBatch).where(
                 StudyBatch.study_id == study.id, StudyBatch.state == BatchState.QUEUED.value)):
             batch.state = batch_state.value
-        # Tasks not yet running can be cancelled here without waiting on anyone.
+        # Tasks not yet running can be canceled here without waiting on anyone.
         for job in s.scalars(select(Job).where(
                 Job.study_id == study.id,
                 Job.state.in_([JobState.ACCEPTED.value, JobState.LEASABLE.value]))
@@ -790,7 +790,7 @@ class StudyServices(ServiceBase):
                     continue
                 self._maybe_complete(s, study)
                 self._top_up(s, study)
-        for study_id in waiting:  # pools short of tasks while work waits (e.g. a task cancelled)
+        for study_id in waiting:  # pools short of tasks while work waits (e.g. a task canceled)
             with self.tx() as s:
                 study = s.get(Study, study_id, with_for_update=True)
                 counts["pools_restarted"] += self._top_up(s, study) > 0

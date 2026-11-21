@@ -8,7 +8,7 @@ adapter isn't held to (``features``) is skipped for it, saying why.
 The cases cover:
 - the capability record, and that every lease here passes it;
 - submitting, and submitting the same attempt again;
-- events, exit codes, cancelling, interruptions from outside, deadlines and memory limits;
+- events, exit codes, canceling, interruptions from outside, deadlines and memory limits;
 - image pull failures;
 - what a runner can see;
 - cleanup, adoption after an agent restart, and provider retries switched off.

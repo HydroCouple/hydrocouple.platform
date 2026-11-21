@@ -66,7 +66,7 @@ def test_run_from_acceptance_to_published_result(world):
     assert results["provenance"]["attempt_id"] == lease.attempt_id
     assert results["provenance"]["actor"]["human_subject"] == "alice"
 
-    # A replayed result (lost acknowledgement) is answered, not re-applied.
+    # A replayed result (lost acknowledgment) is answered, not re-applied.
     again = world.services.agent_complete(world.target_id, ack.attempt_token, result)
     assert again.canonical and again.job_state == "SUCCEEDED"
 

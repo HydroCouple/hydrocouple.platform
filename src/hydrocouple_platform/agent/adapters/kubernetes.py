@@ -278,7 +278,7 @@ def build_probe_job(cfg: KubernetesConfig, image: str, store_uri: str, key: str,
         command=["python", "-m", "hydrocouple_platform.runner.probe", "--key", key],
         amounts=amounts, limits=dict(amounts), node_selector=dict(cfg.node_selector),
         attempt_secret=None)
-    # Labelled as a runner, so the runners' network policy applies to it too.
+    # Labeled as a runner, so the runners' network policy applies to it too.
     return _job(cfg, name, {**MANAGED_BY, f"{LABEL}/role": "runner", f"{LABEL}/probe": "true"},
                 pod_spec, 600)
 
