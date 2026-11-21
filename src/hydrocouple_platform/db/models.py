@@ -347,6 +347,8 @@ class Study(Base):
     pool_size: Mapped[int] = mapped_column(Integer)
     batches_submitted: Mapped[int] = mapped_column(Integer, default=0)
     evaluations_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    # Not maintained since completions share the study row: the count is the sum of the
+    # batches' completed (StudyServices._completed).
     evaluations_completed: Mapped[int] = mapped_column(Integer, default=0)
     evaluations_failed: Mapped[int] = mapped_column(Integer, default=0)
     # Task jobs that failed since a chunk last completed; too many ends the study.

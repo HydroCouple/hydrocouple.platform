@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import csv
 import json
+import multiprocessing
 import os
 import statistics
 import threading
 import time
+from pathlib import Path
 
 import pytest
 from test_studies import Task, candidates, create
@@ -33,6 +35,7 @@ pytestmark = [pytest.mark.postgres,
 
 POOLS = [int(p) for p in os.environ.get("HCP_TEST_LEASE_POOLS", "8,32,128,256").split(",")]
 EVAL_SECONDS = float(os.environ.get("HCP_TEST_LEASE_EVAL_SECONDS", "0.02"))
+PROCESSES = int(os.environ.get("HCP_TEST_LEASE_PROCESSES", "8"))
 CANDIDATES = 1024
 
 
@@ -42,6 +45,65 @@ def percentiles(values: list[float]) -> dict[str, float]:
     q = statistics.quantiles(values, n=100, method="inclusive")
     return {"n": len(values), "p50_ms": round(1000 * q[49], 2), "p95_ms": round(1000 * q[94], 2),
             "p99_ms": round(1000 * q[98], 2), "max_ms": round(1000 * max(values), 2)}
+
+
+def _drive(world, tasks: list[Task], eval_seconds: float) -> tuple[list, int]:
+    """Each task leases and completes chunks until none is left; one thread per task."""
+    calls: list[tuple[str, int, float]] = []  # (call, chunk size, seconds)
+    lock, evaluated = threading.Lock(), [0]
+
+    def work(task: Task) -> None:
+        while True:
+            t0 = time.perf_counter()
+            response = task.lease_chunk()
+            lease = time.perf_counter() - t0
+            if response.chunk is None:
+                with lock:
+                    calls.append(("empty_lease", 0, lease))
+                return
+            size = len(response.chunk.candidates)
+            time.sleep(eval_seconds * size)
+            t1 = time.perf_counter()
+            ack = task.complete(response.chunk)
+            done = time.perf_counter() - t1
+            assert ack.accepted
+            with lock:
+                calls.append(("lease", size, lease))
+                calls.append(("complete", size, done))
+                evaluated[0] += size
+
+    threads = [threading.Thread(target=work, args=(t,)) for t in tasks]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    return calls, evaluated[0]
+
+
+def _worker(job) -> dict:
+    """One process of emulated tasks with its own services and connection pool."""
+    from types import SimpleNamespace
+
+    from hydrocouple_platform.config import ControlPlaneSettings
+    from hydrocouple_platform.contracts.agent import LeaseGrant
+    from hydrocouple_platform.db import make_engine, make_sessionmaker
+    from hydrocouple_platform.services import PlatformServices
+    from hydrocouple_platform.storage import LocalStore
+
+    settings, store_root, root, target_id, leases, eval_seconds, out = job
+    settings = ControlPlaneSettings(**settings)
+    engine = make_engine(settings.database_url)
+    world = SimpleNamespace(services=PlatformServices(make_sessionmaker(engine), settings),
+                            target_id=target_id, store=LocalStore(Path(store_root)),
+                            root=Path(root))
+    tasks = [Task(world, LeaseGrant.model_validate(x)) for x in leases]
+    cpu, start = time.process_time(), time.time()
+    calls, evaluated = _drive(world, tasks, eval_seconds)
+    report = {"calls": calls, "evaluated": evaluated, "cpu_seconds": time.process_time() - cpu,
+              "start": start, "end": time.time()}
+    Path(out).write_text(json.dumps(report) + "\n")
+    engine.dispose()
+    return report
 
 
 def measure(services, artifact_dir, pool: int) -> dict:
@@ -67,36 +129,23 @@ def measure(services, artifact_dir, pool: int) -> dict:
             break
     assert len(tasks) == pool == len({t.attempt_id for t in tasks}), (
         f"{len(tasks)} leases for {len({t.attempt_id for t in tasks})} attempts of {pool}")
-    calls: list[tuple[str, int, float]] = []  # (call, chunk size, seconds)
-    lock, evaluated = threading.Lock(), [0]
-
-    def work(task: Task) -> None:
-        while True:
-            t0 = time.perf_counter()
-            response = task.lease_chunk()
-            lease = time.perf_counter() - t0
-            if response.chunk is None:
-                with lock:
-                    calls.append(("empty_lease", 0, lease))
-                return
-            size = len(response.chunk.candidates)
-            time.sleep(EVAL_SECONDS * size)
-            t1 = time.perf_counter()
-            ack = task.complete(response.chunk)
-            done = time.perf_counter() - t1
-            assert ack.accepted
-            with lock:
-                calls.append(("lease", size, lease))
-                calls.append(("complete", size, done))
-                evaluated[0] += size
-
-    began = time.perf_counter()
-    threads = [threading.Thread(target=work, args=(t,)) for t in tasks]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    wall = time.perf_counter() - began
+    # The tasks, split over processes that each run their own control-plane services (as the
+    # API's workers would) against the same database, so one Python process's lock on its own
+    # interpreter is not what is measured.
+    groups = [tasks[k::PROCESSES] for k in range(min(PROCESSES, pool))]
+    store_root = world.root / "store"
+    jobs = [(world.services.settings.model_dump(), str(store_root), str(world.root),
+             world.target_id, [t.lease.model_dump(mode="json") for t in group], EVAL_SECONDS,
+             str(artifact_dir / f"pool_{pool}_worker_{k}.json"))
+            for k, group in enumerate(groups)]
+    context = multiprocessing.get_context("spawn")
+    with context.Pool(len(jobs)) as workers:
+        reports = workers.map(_worker, jobs)
+    # From the first worker's first call to the last one's end, not counting process start-up.
+    wall = max(r["end"] for r in reports) - min(r["start"] for r in reports)
+    calls = [tuple(c) for r in reports for c in r["calls"]]
+    evaluated = [sum(r["evaluated"] for r in reports)]
+    cpu = sum(r["cpu_seconds"] for r in reports)
     with (artifact_dir / f"latencies_pool_{pool}.csv").open("w", newline="") as stream:
         w = csv.writer(stream)
         w.writerow(["call", "chunk_size", "seconds"])
@@ -106,6 +155,10 @@ def measure(services, artifact_dir, pool: int) -> dict:
         "pool": pool, "candidates": CANDIDATES, "evaluated": evaluated[0],
         "chunk_sizes": sizes, "eval_seconds_per_candidate": EVAL_SECONDS,
         "wall_seconds": round(wall, 3),
+        "processes": len(jobs),
+        # The workers' CPU time over wall time, per process: near 1, a worker's Python is the
+        # limit rather than the database.
+        "cpu_per_wall_per_process": round(cpu / wall / len(jobs), 2),
         "evaluations_per_second": round(evaluated[0] / wall, 1),
         "ideal_seconds": round(CANDIDATES * EVAL_SECONDS / pool, 3),
         "lease": percentiles([s for call, _, s in calls if call == "lease"]),

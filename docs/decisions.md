@@ -160,7 +160,7 @@ A task asking for a lease while it still holds a chunk gets that chunk again: th
 
 **Known limits.**
 
-- Every lease and completion for one study takes the study's row lock. That is measured fine for a few tasks: 1,000 twin-tank evaluations on three tasks took about a minute. Pools of hundreds of tasks will need the lock narrowed.
+- Leases and completions that only add results share the study's row; a completion writes only its chunk, a batch's progress is counted from its chunks, and the completion that fills a batch finishes it afterwards. Measured with emulated tasks over eight control-plane processes (`tests/integration/test_study_lease_scale.py`, 1,024 candidates, 20 ms each): 128 tasks evaluate 825 candidates per second (completion p95 355 ms), against 311 per second (p95 1.1 s) when every call took the study row exclusively; 256 tasks 440 per second. Throughput still falls past about 32 tasks, so a pool of hundreds pays in completion latency.
 - A pool's size is not checked against the target's capacity. Tasks beyond it wait in the queue.
 - Under the `fail` policy, chunks run in parallel, so a study can fail on a later chunk while earlier ones are still unevaluated. `run_platform_study` writes the records evaluated before the failure, as `run_study` does, and reports the rest as not evaluated, where `run_study` would have evaluated them.
 - Platypus draws from Python's process-wide `random`. `run_platform_study` seeds it with the study's seed, and `openswmm_gymnasium` now seeds it too when it builds a Platypus optimizer (November 20, 2026), so a same-seeded `run_study` needs no seeding of its own. Two studies running at once in one process share the generator and do not repeat.

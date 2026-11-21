@@ -1,9 +1,19 @@
 """Studies: batches of candidates evaluated on fenced evaluator pools.
 
-Locks follow the platform order, job then attempt then study then chunk, so the
-agent routes, the reconciler and the client routes cannot deadlock. A path that
-holds a study lock touches other jobs only with SKIP LOCKED, or after it
-commits.
+Locks follow the platform order, job then attempt then study then chunk then
+batch, so the agent routes, the reconciler and the client routes cannot
+deadlock. A path that holds a study lock touches other jobs only with SKIP
+LOCKED, or after it commits.
+
+A lease, and a completion that only adds a chunk's results, share the study
+row (FOR SHARE), so a pool's tasks do not wait on one another; they still
+exclude every change of the study's state, batch submissions and top-ups, which
+take the row exclusively. A completion with a failed candidate, while the pool
+is recovering from failed tasks, or once the study has ended takes it
+exclusively too. A shared completion writes only its chunk; a batch's progress
+is counted from its chunks, and the completion that finds its batch full
+finishes it afterwards, in its own transaction (the reconciler finishes one a
+process did not get to).
 
 Rows are kept per study, batch and chunk, never per evaluation: an evaluator
 writes the per-evaluation records as an append-only object per chunk, and the
@@ -350,12 +360,15 @@ class StudyServices(ServiceBase):
             results = [EvaluationRecord.model_validate(r) for r in batch.results]
         nxt = None
         if batch.state == BatchState.QUEUED.value:
-            nxt = f"Query the batch again; {batch.completed} of {batch.size} are evaluated"
+            nxt = (f"Query the batch again; {self._progress(s, batch.id)} of {batch.size} are "
+                   "evaluated")
             if study.state == StudyState.PENDING_APPROVAL.value:
                 nxt = "The study waits for a person's approval; the batch runs after it"
         return BatchView(batch_id=batch.id, study_id=study.id, sequence=batch.sequence,
                          first_evaluation=batch.offset + 1, state=batch.state, size=batch.size,
-                         completed=batch.completed, results=results, next_action=nxt)
+                         completed=self._progress(s, batch.id) if batch.state ==
+                         BatchState.QUEUED.value else batch.completed, results=results,
+                         next_action=nxt)
 
     # -- lifecycle -------------------------------------------------------------------
 
@@ -562,7 +575,7 @@ class StudyServices(ServiceBase):
             done = EvaluationLeaseResponse(done=True)
             if job.cancel_requested or job.retired_at is not None:
                 return done
-            study = s.get(Study, job.study_id, with_for_update=True)
+            study = s.get(Study, job.study_id, with_for_update={"read": True})
             if study.state not in (StudyState.OPEN.value, StudyState.CLOSED.value):
                 job.retired_at = now
                 return done
@@ -580,8 +593,12 @@ class StudyServices(ServiceBase):
                 .with_for_update(skip_locked=True))
             if chunk is None:
                 idle = float(study.definition.get("idle_timeout_seconds", 600))
+                # A completion that shares the study row leaves its time on the chunk only.
+                last = s.scalar(select(func.max(ChunkRow.completed_at))
+                                .where(ChunkRow.study_id == study.id))
+                active = max(study.updated_at, last) if last else study.updated_at
                 if (study.state == StudyState.CLOSED.value
-                        or now - study.updated_at > timedelta(seconds=idle)):
+                        or now - active > timedelta(seconds=idle)):
                     # Retired under the study lock, so a batch submitted next starts a new task.
                     job.retired_at = now
                     return done
@@ -608,11 +625,19 @@ class StudyServices(ServiceBase):
                             body: EvaluationCompletion) -> CompletionAck:
         self.tokens.check(attempt_token, target_id=target_id, attempt_id=body.attempt_id,
                           fence=body.fencing_token)
-        ended = None
+        ended, finish = None, None
         with self.tx() as s:
             job, attempt = self._locked(s, target_id, body.attempt_id)  # type: ignore[attr-defined]
             self._authority(job, attempt, body.fencing_token)  # type: ignore[attr-defined]
-            study = s.get(Study, job.study_id, with_for_update=True) if job.study_id else None
+            # Read first, unlocked, to choose the lock: only adding results shares the study row.
+            peek = s.execute(select(Study.state, Study.task_failures)
+                             .where(Study.id == job.study_id)).one_or_none() if job.study_id \
+                else None
+            shared = (peek is not None and peek.task_failures == 0
+                      and peek.state in (StudyState.OPEN.value, StudyState.CLOSED.value)
+                      and all(r.error is None for r in body.results))
+            study = s.get(Study, job.study_id, with_for_update={"read": True} if shared
+                          else True) if job.study_id else None
             chunk = s.get(ChunkRow, body.chunk_id, with_for_update=True)
             if study is None or chunk is None or chunk.study_id != study.id:
                 raise PlatformError(ErrorCode.NOT_FOUND, f"chunk {body.chunk_id} was not found")
@@ -638,24 +663,30 @@ class StudyServices(ServiceBase):
             if not body.object.key.startswith(prefix):
                 raise PlatformError(ErrorCode.VALIDATION_ERROR,
                                     f"evaluation records must be stored under {prefix}")
-            self._record(s, study, chunk, [r.model_dump() for r in body.results],
-                         attempt_id=attempt.id, obj=body.object.model_dump())
-            if study.state == StudyState.FAILED.value:
+            if self._record(s, study, chunk, [r.model_dump() for r in body.results],
+                            attempt_id=attempt.id, obj=body.object.model_dump(), shared=shared):
+                finish = (study.id, chunk.batch_id)  # after commit, in its own transaction
+            elif study.state == StudyState.FAILED.value:
                 ended = study.id
             else:
                 self._maybe_complete(s, study)
         if ended:
             self._stop_pool(ended)
+        if finish:
+            self._finish_batch(*finish)
         return CompletionAck(accepted=True)
 
     def _record(self, s: Session, study: Study, chunk: ChunkRow, results: list[dict],
-                attempt_id: str | None, obj: dict | None) -> None:
-        """Store a chunk's outcome, applying the study's failed-candidate policy."""
+                attempt_id: str | None, obj: dict | None, shared: bool = False) -> bool:
+        """Store a chunk's outcome, applying the study's failed-candidate policy; returns
+        whether its batch may now be full. ``shared``: the caller holds the study row FOR SHARE,
+        so only the chunk is written (no candidate failed and the task-failure count is 0, as
+        the caller checked) and the caller finishes the batch after it commits."""
         definition = study.definition
         policy = FailurePolicy(definition["on_failure"])
         penalty = [float(definition["failure_penalty"])] * len(definition["objectives"])
-        batch = s.get(StudyBatch, chunk.batch_id, with_for_update=True)
         records, failures = [], []
+        batch = s.get(StudyBatch, chunk.batch_id, with_for_update=not shared)
         for i, r in enumerate(results):
             evaluation = batch.offset + chunk.start + i + 1
             if r.get("error") is None:
@@ -674,24 +705,60 @@ class StudyServices(ServiceBase):
         if obj is not None:
             chunk.object_key, chunk.object_sha256 = obj["key"], obj["sha256"]
             chunk.object_size = obj["size"]
-        study.evaluations_completed += len(records)
-        study.evaluations_failed += len(failures)
-        study.updated_at = now
-        if attempt_id is not None:
-            study.task_failures = 0  # a task completed a chunk: the pool works
-        batch.completed += len(records)
+        if not shared:
+            # The completed count is the batches' (study_counts); failures and activity stay here.
+            study.evaluations_failed += len(failures)
+            study.updated_at = now
+            if attempt_id is not None:
+                study.task_failures = 0  # a task completed a chunk: the pool works
         s.flush()
-        if batch.completed >= batch.size and batch.state == BatchState.QUEUED.value:
-            rows = s.scalars(select(ChunkRow).where(ChunkRow.batch_id == batch.id)
-                             .order_by(ChunkRow.start))
-            batch.results = [rec for c in rows for rec in (c.results or [])]
-            batch.state, batch.completed_at = BatchState.DONE.value, now
+        if shared:
+            return True
+        self._finish(s, batch, now)
         if failures and policy == FailurePolicy.FAIL and \
                 StudyState(study.state) not in STUDY_TERMINAL:
             evaluation, error = min(failures)
             self._end_study(s, study, StudyState.FAILED, {
                 "reason": f"evaluation {evaluation} failed and the study's policy is 'fail'",
                 "evaluation": evaluation, "error": error})
+        return False
+
+    @staticmethod
+    def _progress(s: Session, batch_id: str) -> int:
+        """Evaluations of a batch recorded so far, failed ones included: its done chunks."""
+        return int(s.scalar(select(func.coalesce(func.sum(ChunkRow.stop - ChunkRow.start), 0))
+                            .where(ChunkRow.batch_id == batch_id, ChunkRow.state == "DONE"))
+                   or 0)
+
+    @staticmethod
+    def _completed(s: Session, study: Study) -> int:
+        """Evaluations completed, failed ones included: the study's done chunks."""
+        return int(s.scalar(select(func.coalesce(func.sum(ChunkRow.stop - ChunkRow.start), 0))
+                            .where(ChunkRow.study_id == study.id, ChunkRow.state == "DONE"))
+                   or 0)
+
+    def _finish(self, s: Session, batch: StudyBatch, now) -> bool:
+        """Finish a queued batch whose chunks are all done (caller holds the batch row)."""
+        progress = self._progress(s, batch.id)
+        if batch.state != BatchState.QUEUED.value or progress < batch.size:
+            return False
+        rows = s.scalars(select(ChunkRow).where(ChunkRow.batch_id == batch.id)
+                         .order_by(ChunkRow.start))
+        batch.results = [rec for c in rows for rec in (c.results or [])]
+        batch.state, batch.completed_at, batch.completed = BatchState.DONE.value, now, progress
+        return True
+
+    def _finish_batch(self, study_id: str, batch_id: str) -> None:
+        """After a shared completion commits: finish its batch if it is full, and a closed study
+        whose last batch it was. Locks the study, then the batch, as every path does."""
+        with self.tx() as s:
+            if self._progress(s, batch_id) < s.scalar(
+                    select(StudyBatch.size).where(StudyBatch.id == batch_id)):
+                return
+            study = s.get(Study, study_id, with_for_update=True)
+            batch = s.get(StudyBatch, batch_id, with_for_update=True)
+            if self._finish(s, batch, self.now()):
+                self._maybe_complete(s, study)
 
     # -- reconciler -------------------------------------------------------------------
 
@@ -727,6 +794,26 @@ class StudyServices(ServiceBase):
             with self.tx() as s:
                 study = s.get(Study, study_id, with_for_update=True)
                 counts["pools_restarted"] += self._top_up(s, study) > 0
+        # A full batch is finished, and a closed study completed, after the shared completion that
+        # filled it commits; one the process did not get to is finished here.
+        with self.tx() as s:
+            full = list(s.execute(
+                select(StudyBatch.study_id, StudyBatch.id).where(
+                    StudyBatch.state == BatchState.QUEUED.value,
+                    ~select(ChunkRow.id).where(ChunkRow.batch_id == StudyBatch.id,
+                                               ChunkRow.state != "DONE").exists())
+                .limit(limit)))
+            closed = list(s.scalars(
+                select(Study.id).where(
+                    Study.state == StudyState.CLOSED.value,
+                    ~select(StudyBatch.id).where(StudyBatch.study_id == Study.id,
+                                                 StudyBatch.state == BatchState.QUEUED.value)
+                    .exists()).limit(limit)))
+        for study_id, batch_id in full:
+            self._finish_batch(study_id, batch_id)
+        for study_id in closed:
+            with self.tx() as s:
+                self._maybe_complete(s, s.get(Study, study_id, with_for_update=True))
         return counts
 
     # -- results --------------------------------------------------------------------------
@@ -837,7 +924,7 @@ class StudyServices(ServiceBase):
                 "workload": task["workload"], "runtime": task["runtime"],
                 "max_evaluations": study.max_evaluations, "pool_size": study.pool_size,
                 "counts": {"submitted": study.evaluations_submitted,
-                           "completed": study.evaluations_completed,
+                           "completed": self._completed(s, study),
                            "failed": study.evaluations_failed},
                 "batches": batches, "chunks": chunks, "pool": pool,
             }
@@ -865,7 +952,7 @@ class StudyServices(ServiceBase):
             dimensions=len(study.definition["dimensions"]), seed=study.definition["seed"],
             on_failure=study.definition["on_failure"], max_evaluations=study.max_evaluations,
             evaluations_submitted=study.evaluations_submitted,
-            evaluations_completed=study.evaluations_completed,
+            evaluations_completed=self._completed(s, study),
             evaluations_failed=study.evaluations_failed, batches=study.batches_submitted,
             pool_size=study.pool_size, pool=pool, approval_id=approval, failure=study.failure,
             created_at=study.created_at, updated_at=study.updated_at, next_action=nxt)

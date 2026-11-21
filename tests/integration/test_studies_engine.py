@@ -26,7 +26,7 @@ from hydrocouple_platform.agent import Agent, AgentClient
 from hydrocouple_platform.agent.adapters.local import LocalPoolAdapter
 from hydrocouple_platform.client import PlatformClient
 from hydrocouple_platform.contracts.jobs import EgressPolicy
-from hydrocouple_platform.db.models import EvaluationChunk, Study
+from hydrocouple_platform.db.models import EvaluationChunk
 from hydrocouple_platform.gym import run_platform_study
 from hydrocouple_platform.packaging import package_swmm_model
 from world import make_world
@@ -163,9 +163,10 @@ def test_a_1000_evaluation_study_matches_a_local_run(services, artifact_dir, ser
         def kill_a_task_mid_chunk():
             # Once a third of the study is done, kill a task while it holds a chunk.
             while not stop.is_set():
-                with services.tx() as s:
-                    done = s.scalar(select(func.coalesce(func.sum(Study.evaluations_completed),
-                                                         0)))
+                with services.tx() as s:  # evaluations done: the done chunks' candidates
+                    done = s.scalar(select(func.coalesce(func.sum(
+                        EvaluationChunk.stop - EvaluationChunk.start), 0))
+                        .where(EvaluationChunk.state == "DONE"))
                     holder = s.scalar(select(EvaluationChunk.holder_attempt_id).where(
                         EvaluationChunk.state == "LEASED").limit(1))
                 proc = platform.adapter._procs.get(holder) if holder else None
