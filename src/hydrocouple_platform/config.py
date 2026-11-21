@@ -13,6 +13,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class ControlPlaneSettings(BaseSettings):
+    """Database, token-verification and timing settings for the control plane."""
+
     model_config = SettingsConfigDict(env_prefix="HCP_", extra="ignore")
 
     database_url: str

@@ -2,6 +2,7 @@
 
 Images are referenced by digest. Before a container adapter starts an attempt, the
 agent:
+
 - rewrites the image to the site's registry mirror, when it has one, keeping the
   digest;
 - verifies its cosign signature against the pinned public keys.

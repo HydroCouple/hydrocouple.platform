@@ -1,6 +1,7 @@
 """``hcp agent --verify`` and ``hcp agent --dry-run``: check a site, and say what the agent does.
 
 Verification checks, in order:
+
 1. the control plane is reachable and accepts the target credential;
 2. the scheduler permissions are in place: the namespaced Role on Kubernetes, a writable
    work root on the local pool;

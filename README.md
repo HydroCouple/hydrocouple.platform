@@ -6,9 +6,9 @@ Durable, bring-your-own-compute execution of SWMM simulations and HydroCouple co
 - **The execution agent** (`agent` extra) runs in the customer's account or site. It opens every connection itself, claims fenced leases, runs work on its own scheduler, mints storage grants with the site's own identity, and filters what leaves the site.
 - **Runners** (`runner` extra) execute approved, versioned workflows next to the engine. They verify every input, then write a HydroCouple run manifest and a platform attempt manifest with provenance.
 
-The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decisions.md). The full plan lives in `openswmm.gui/workplans/SWMM_CLOUD_EXECUTION_PLATFORM_PLAN_2026-10-15.md`.
+The design, and the decisions behind it, are in [`docs/decisions.rst`](docs/decisions.rst). The full plan lives in `openswmm.gui/workplans/SWMM_CLOUD_EXECUTION_PLATFORM_PLAN_2026-10-15.md`.
 
-[Execution platform guide](docs/index.md) · [First local run](docs/first-run.md) · [Lifecycle and recovery](docs/execution.md)
+[Execution platform guide](docs/index.rst) · [First local run](docs/first-run.rst) · [Lifecycle and recovery](docs/execution.rst)
 
 Build the guide with `python -m pip install -e ".[docs]"` and `python -m sphinx -W -b html docs build/docs`.
 
