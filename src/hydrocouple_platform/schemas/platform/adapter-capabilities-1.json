@@ -40,6 +40,14 @@
       "title": "Adapter",
       "type": "string"
     },
+    "composition_hosts": {
+      "description": "Composition hosts the target runs (hydrocouple.composer: HydroCoupleComposer headless with the OpenSWMM engine component)",
+      "items": {
+        "type": "string"
+      },
+      "title": "Composition Hosts",
+      "type": "array"
+    },
     "family": {
       "enum": [
         "local",

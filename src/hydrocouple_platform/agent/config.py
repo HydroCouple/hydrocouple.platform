@@ -23,9 +23,17 @@ class _Model(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class CompositionHostConfig(_Model):
+    """HydroCoupleComposer, run headless, and the directories holding the engine component."""
+
+    executable: str
+    component_paths: list[str] = Field(min_length=1)
+
+
 class LocalPoolConfig(_Model):
     work_root: str
     slots: int = Field(default=1, ge=1)
+    composition_host: CompositionHostConfig | None = None
 
 
 class GatewayConfig(_Model):
@@ -69,7 +77,8 @@ def build_adapter(cfg: AgentConfig, kubeconfig: str | None = None):
         return KubernetesAdapter(cfg.kubernetes, api_client=load_api_client(kubeconfig))
     from .adapters.local import LocalPoolAdapter
 
-    return LocalPoolAdapter(cfg.local_pool.work_root, slots=cfg.local_pool.slots)
+    return LocalPoolAdapter(cfg.local_pool.work_root, slots=cfg.local_pool.slots,
+                            composition_host=cfg.local_pool.composition_host)
 
 
 def build_agent(cfg: AgentConfig, credential: str, kubeconfig: str | None = None):

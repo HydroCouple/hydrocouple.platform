@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 JOB_SPEC_VERSION = "1"
 
@@ -92,6 +92,16 @@ class Runtime(_Model):
     image: str | None = None
     architecture: str | None = None
     threads: int = Field(default=1, ge=1)
+    host: str | None = Field(
+        default=None, description="The composition host the workflow needs on the target")
+
+    @model_serializer(mode="wrap")
+    def _no_host_no_key(self, handler):
+        # Absent, not null, so job specs of workflows without a host read as before.
+        data = handler(self)
+        if self.host is None:
+            data.pop("host", None)
+        return data
 
 
 class InputFile(_Model):

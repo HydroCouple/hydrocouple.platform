@@ -58,6 +58,10 @@ class AdapterCapabilities(BaseModel):
     runs_images: bool = Field(
         default=True, description="False for the local pool, which runs the installed runner."
     )
+    composition_hosts: list[str] = Field(
+        default_factory=list,
+        description="Composition hosts the target runs (hydrocouple.composer: HydroCoupleComposer "
+                    "headless with the OpenSWMM engine component)")
 
     @model_validator(mode="after")
     def _sizes_within_maxima(self) -> AdapterCapabilities:
@@ -129,6 +133,8 @@ def check_spec(cap: AdapterCapabilities, spec: JobSpec) -> list[str]:
             findings.append(f"GPU '{res.gpu}' is not available on {cap.adapter}")
     if spec.placement.interruption == "interruptible" and cap.interruption_tolerant is not True:
         findings.append(f"{cap.adapter} does not offer interruptible capacity")
+    if spec.runtime.host is not None and spec.runtime.host not in cap.composition_hosts:
+        findings.append(f"{cap.adapter} has no composition host {spec.runtime.host}")
     if spec.runtime.image is None and cap.runs_images:
         findings.append(
             f"workflow '{spec.workload.workflow}' has no qualified image for {cap.adapter}"

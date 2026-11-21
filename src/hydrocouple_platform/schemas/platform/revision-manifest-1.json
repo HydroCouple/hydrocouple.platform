@@ -1,5 +1,39 @@
 {
   "$defs": {
+    "ComponentInstance": {
+      "additionalProperties": false,
+      "description": "One component of a composition of more than the generated single model.",
+      "properties": {
+        "component_info_id": {
+          "title": "Component Info Id",
+          "type": "string"
+        },
+        "id": {
+          "description": "The component's id in the composition",
+          "minLength": 1,
+          "title": "Id",
+          "type": "string"
+        },
+        "model": {
+          "description": "The model file it runs, a path in the package",
+          "title": "Model",
+          "type": "string"
+        },
+        "role": {
+          "description": "Its configuration's role (complete_model, split_network, ...)",
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "component_info_id",
+        "role",
+        "model"
+      ],
+      "title": "ComponentInstance",
+      "type": "object"
+    },
     "DerivedFrom": {
       "additionalProperties": false,
       "description": "The revision a revision was made from, and the study evaluation that chose it.",
@@ -123,6 +157,22 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "component_instances": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/ComponentInstance"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The components of an authored composition, with the role and model each runs; absent for a generated single model.",
+      "title": "Component Instances"
+    },
     "components": {
       "description": "component_info_id of every component",
       "items": {

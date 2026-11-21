@@ -191,7 +191,7 @@ class RunServices(ServiceBase):
                               parameters=parameters),
             runtime=Runtime(image=self.settings.workflow_images.get(
                 f"{workflow.name}@{workflow.version}", workflow.images.get("default")),
-                threads=threads),
+                threads=threads, host=workflow.host),
             inputs=Inputs(
                 revision_id=revision.id, manifest_sha256=revision.manifest_sha256,
                 storage_prefix=revision.storage_prefix,

@@ -406,6 +406,19 @@
           "default": null,
           "title": "Architecture"
         },
+        "host": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The composition host the workflow needs on the target",
+          "title": "Host"
+        },
         "image": {
           "anyOf": [
             {

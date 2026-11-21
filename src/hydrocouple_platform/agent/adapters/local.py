@@ -59,12 +59,23 @@ class LocalPoolAdapter:
     name = "local-pool"
 
     def __init__(self, work_root: str | Path, slots: int = 1, python: str = sys.executable,
-                 grace_seconds: float = 10.0, keep_workdirs: bool = False):
+                 grace_seconds: float = 10.0, keep_workdirs: bool = False,
+                 composition_host=None):
         self.work_root = Path(work_root).resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.slots, self.python, self.grace = slots, python, grace_seconds
         self.keep_workdirs = keep_workdirs
+        # HydroCoupleComposer and the engine component directories (CompositionHostConfig).
+        self.composition_host = composition_host
         self._procs: dict[str, _Proc] = {}
+
+    def _host_environment(self) -> dict[str, str]:
+        h = self.composition_host
+        if h is None or not Path(h.executable).is_file():
+            return {}
+        return {"HYDROCOUPLE_COMPOSER": str(Path(h.executable).resolve()),
+                "HYDROCOUPLE_COMPONENT_PATH": os.pathsep.join(
+                    str(Path(p).resolve()) for p in h.component_paths)}
 
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
@@ -75,6 +86,7 @@ class LocalPoolAdapter:
             gpu=[], scratch_gib=round(shutil.disk_usage(self.work_root).free / 1024**3, 2),
             scratch_in_memory=False, interruption_tolerant=False, provider_retries=0,
             idempotent_submit=True, status_integration="direct", runs_images=False,
+            composition_hosts=["hydrocouple.composer"] if self._host_environment() else [],
         )
 
     def free_slots(self) -> int:
@@ -90,7 +102,8 @@ class LocalPoolAdapter:
         workdir.mkdir(parents=True, exist_ok=True)
         spec_path = workdir / "spec.json"
         spec_path.write_text(lease.spec.model_dump_json(indent=2), encoding="utf-8")
-        env = runner_environment(lease.spec.runtime.threads, env, secrets)
+        env = runner_environment(lease.spec.runtime.threads, {**self._host_environment(),
+                                                              **(env or {})}, secrets)
         stderr = open(workdir / "runner.stderr.log", "wb")
         process = subprocess.Popen(
             [self.python, "-m", "hydrocouple_platform.runner", "--spec", str(spec_path),

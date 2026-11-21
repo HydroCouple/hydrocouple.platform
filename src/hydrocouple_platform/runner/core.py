@@ -105,6 +105,8 @@ class HandlerResult:
     quality: dict[str, Any]
     engine_version: str | None
     artifacts: list[tuple[str, ArtifactKind, str]]  # (path under outputs, kind, format)
+    # A composition run's components, named in the attempt manifest's provenance.
+    provenance_components: list[dict[str, Any]] | None = None
 
 
 Handler = Callable[[Context, dict], HandlerResult]
@@ -218,6 +220,7 @@ def publish(ctx: Context, result: HandlerResult, inputs_used: dict[str, str],
             resumed_from=next(({"run_id": a.run_id, "attempt_id": a.attempt_id,
                                 "path": a.source_path, "sha256": a.sha256}
                                for a in spec.inputs.artifacts if a.role == "resume"), None),
+            components=result.provenance_components,
         ),
     ).model_dump(mode="json", by_alias=True)
     manifest_path = ctx.outputs / "attempt.json"

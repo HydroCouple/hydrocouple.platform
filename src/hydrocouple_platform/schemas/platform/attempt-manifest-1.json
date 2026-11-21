@@ -137,6 +137,43 @@
       "title": "ArtifactKind",
       "type": "string"
     },
+    "ComponentRecord": {
+      "additionalProperties": false,
+      "description": "A component a composition run ran, and how it ended.",
+      "properties": {
+        "component_info_id": {
+          "title": "Component Info Id",
+          "type": "string"
+        },
+        "final_status": {
+          "description": "The host's final status for it (Finished, Failed, ...)",
+          "title": "Final Status",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "qualification": {
+          "description": "The engine's word for the role: qualified or experimental",
+          "title": "Qualification",
+          "type": "string"
+        },
+        "role": {
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "component_info_id",
+        "role",
+        "final_status",
+        "qualification"
+      ],
+      "title": "ComponentRecord",
+      "type": "object"
+    },
     "Provenance": {
       "additionalProperties": false,
       "description": "Execution provenance; ``to_prov`` renders it in W3C PROV-JSON terms.",
@@ -151,6 +188,22 @@
         "attempt_number": {
           "title": "Attempt Number",
           "type": "integer"
+        },
+        "components": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/ComponentRecord"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "The components a composition run ran; absent for a run of one model",
+          "title": "Components"
         },
         "composition_sha256": {
           "pattern": "^[0-9a-f]{64}$",

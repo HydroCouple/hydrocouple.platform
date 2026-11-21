@@ -95,6 +95,15 @@ class DerivedFrom(_Model):
         default=None, description="The evaluation's design, by dimension key")
 
 
+class ComponentInstance(_Model):
+    """One component of a composition of more than the generated single model."""
+
+    id: str = Field(min_length=1, description="The component's id in the composition")
+    component_info_id: str
+    role: str = Field(description="Its configuration's role (complete_model, split_network, ...)")
+    model: SafePath = Field(description="The model file it runs, a path in the package")
+
+
 class RevisionManifest(_Model):
     schema_: Literal["hydrocouple.platform/revision-manifest/1"] = Field(
         default=REVISION_MANIFEST_SCHEMA, alias="schema"
@@ -110,15 +119,20 @@ class RevisionManifest(_Model):
     )
     derived_from: DerivedFrom | None = Field(
         default=None, description="Lineage of a revision made from another; absent otherwise.")
+    component_instances: list[ComponentInstance] | None = Field(
+        default=None, description="The components of an authored composition, with the role "
+                                  "and model each runs; absent for a generated single model.")
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     @model_serializer(mode="wrap")
     def _no_lineage_no_key(self, handler):
-        # Absent, not null, so the manifests written before derived_from keep their digests.
+        # Absent, not null, so the manifests written before these fields keep their digests.
         data = handler(self)
         if self.derived_from is None:
             data.pop("derived_from", None)
+        if self.component_instances is None:
+            data.pop("component_instances", None)
         return data
 
     def digest(self) -> str:
@@ -162,6 +176,17 @@ class ResumedFrom(_Model):
     sha256: str = Field(pattern=_SHA)
 
 
+class ComponentRecord(_Model):
+    """A component a composition run ran, and how it ended."""
+
+    id: str
+    component_info_id: str
+    role: str
+    final_status: str = Field(description="The host's final status for it (Finished, Failed, ...)")
+    qualification: str = Field(description="The engine's word for the role: qualified or "
+                                           "experimental")
+
+
 class Provenance(_Model):
     """Execution provenance; ``to_prov`` renders it in W3C PROV-JSON terms."""
 
@@ -185,13 +210,18 @@ class Provenance(_Model):
     finished_at: datetime
     resumed_from: ResumedFrom | None = Field(
         default=None, description="The saved state of an earlier run this attempt resumed from")
+    components: list[ComponentRecord] | None = Field(
+        default=None, description="The components a composition run ran; absent for a run of "
+                                  "one model")
 
     @model_serializer(mode="wrap")
     def _no_resume_no_key(self, handler):
-        # Absent, not null, so attempt manifests written before resumed_from keep their digests.
+        # Absent, not null, so attempt manifests written before these fields keep their digests.
         data = handler(self)
         if self.resumed_from is None:
             data.pop("resumed_from", None)
+        if self.components is None:
+            data.pop("components", None)
         return data
 
     def to_prov(self) -> dict[str, Any]:

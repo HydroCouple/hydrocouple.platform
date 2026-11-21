@@ -33,6 +33,8 @@ class Workflow:
     description: str = ""
     # Whether a run may continue from the saved state of an earlier run of this workflow.
     resumable: bool = False
+    # The composition host the target must offer (its capabilities' composition_hosts).
+    host: str | None = None
 
     def validate_parameters(self, parameters: dict[str, Any]) -> dict[str, Any]:
         try:
@@ -241,11 +243,35 @@ TWIN_CYCLE_V1 = Workflow(
     resumable=True,
 )
 
+COMPOSER_HOST = "hydrocouple.composer"
+
+COMPOSITION_RUN_V1 = Workflow(
+    name="composition.run",
+    version="1",
+    job_class=JobClass.SINGLE,
+    handler="composition.run",
+    allowed_components=frozenset({OPENSWMM_ENGINE_COMPONENT}),
+    parameters_schema={
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "threads": {"type": "integer", "minimum": 1, "maximum": 64, "default": 1},
+        },
+    },
+    # Each component's outputs are checked by the runner, by its role.
+    required_artifacts=("run.json", "attempt.json", "host/run-manifest.json"),
+    description="Run an authored HydroCouple composition of OpenSWMM engine components with "
+                "the target's composition host (HydroCoupleComposer, headless): one run, one "
+                "attempt, every component named.",
+    host=COMPOSER_HOST,
+)
+
 REGISTRY: dict[tuple[str, str], Workflow] = {
     (SWMM_SIMULATION_V1.name, SWMM_SIMULATION_V1.version): SWMM_SIMULATION_V1,
     (SWMM_SIMULATION_V2.name, SWMM_SIMULATION_V2.version): SWMM_SIMULATION_V2,
     (GYM_EVALUATE_V1.name, GYM_EVALUATE_V1.version): GYM_EVALUATE_V1,
     (TWIN_CYCLE_V1.name, TWIN_CYCLE_V1.version): TWIN_CYCLE_V1,
+    (COMPOSITION_RUN_V1.name, COMPOSITION_RUN_V1.version): COMPOSITION_RUN_V1,
 }
 
 

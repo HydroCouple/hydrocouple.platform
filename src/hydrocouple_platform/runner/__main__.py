@@ -18,7 +18,8 @@ from .core import stage_inputs as _stage
 
 HANDLERS = {"swmm.simulation": "hydrocouple_platform.runner.swmm",
             "gym.evaluate": "hydrocouple_platform.runner.gym",
-            "twin.cycle": "hydrocouple_platform.runner.twin"}
+            "twin.cycle": "hydrocouple_platform.runner.twin",
+            "composition.run": "hydrocouple_platform.runner.composition"}
 
 
 def main(argv: list[str] | None = None) -> int:

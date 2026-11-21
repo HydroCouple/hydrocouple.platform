@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from ..contracts.agent import GrantFulfillment, GrantMode
 from ..contracts.errors import ErrorCode, PlatformError
+from ..contracts.manifests import FileRole
 from ..contracts.requests import RevisionCreate
 from ..db.models import (
     ComputeTarget,
@@ -45,6 +46,22 @@ class RevisionServices(ServiceBase):
             raise PlatformError(ErrorCode.VALIDATION_ERROR,
                                 f"the package has {len(paths)} files; the limit is "
                                 f"{self.settings.max_revision_files}")
+        if manifest.component_instances is not None:
+            models = {f.path for f in manifest.files if f.role == FileRole.MODEL}
+            ids = [i.id for i in manifest.component_instances]
+            if not ids or len(set(ids)) != len(ids):
+                raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                    "the manifest's component instances need distinct ids")
+            for i in manifest.component_instances:
+                if i.model not in models:
+                    raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                        f"component {i.id} runs {i.model}, which the manifest "
+                                        "does not list as a model")
+            if {i.component_info_id for i in manifest.component_instances} != set(
+                    manifest.components):
+                raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                    "the manifest's components and its component instances "
+                                    "name different components")
         total = sum(f.size for f in manifest.files)
         if total != manifest.total_bytes or total > self.settings.max_revision_bytes:
             raise PlatformError(ErrorCode.VALIDATION_ERROR,

@@ -1,6 +1,7 @@
-"""Build an immutable revision package from a SWMM model on the user's machine.
+"""Build an immutable revision package from a SWMM model, or from an authored composition of
+OpenSWMM engine components, on the user's machine.
 
-The original files are never modified. The packaged ``.inp`` is a rewritten
+The original files are never modified. A packaged ``.inp`` is a rewritten
 copy whose references point inside the package, written to a staging folder
 the caller chooses (so it can be reviewed). Uploading is left to
 ``PlatformClient.upload_revision``.
@@ -18,6 +19,7 @@ from pathlib import Path, PurePosixPath
 
 from .. import __version__
 from ..contracts.manifests import (
+    ComponentInstance,
     FileRole,
     ManifestFile,
     RevisionManifest,
@@ -55,34 +57,13 @@ def _stamp(path: Path) -> tuple[int, int]:
     return st.st_size, st.st_mtime_ns
 
 
-def package_swmm_model(
-    inp_path: str | Path,
-    staging_dir: str | Path,
-    *,
-    extra_files: Mapping[str, str | Path] | None = None,
-    max_files: int = 5000,
-    max_bytes: int = 20 * 1024**3,
-) -> Package:
-    """Package one SWMM model as a one-component HydroCouple composition.
-
-    ``extra_files`` maps a path relative to the model folder (``data/observed.csv``) to a
-    local file the model does not reference itself, such as observations a study compares
-    with or an event's rain series. Each is packaged at that path inside ``model/`` with the
-    role ``sidecar``, hashed like every input and verified by the runner.
-    """
-    inp_path = Path(inp_path).resolve()
-    model_dir = inp_path.parent
-    staging = Path(staging_dir).resolve()
-    staging.mkdir(parents=True, exist_ok=True)
-    text = inp_path.read_text(encoding="utf-8")
-
-    problems: list[str] = []
-    findings: list[str] = []
-    sources: dict[str, Path] = {}
-    roles: dict[str, tuple[FileRole, str | None]] = {}
+def _scan_model(text: str, model_dir: Path, prefix: str, sources: dict[str, Path],
+                roles: dict[str, tuple[FileRole, str | None]], problems: list[str],
+                findings: list[str]) -> list[tuple[inpscan.Reference, str]]:
+    """Package every file a model references under ``prefix``; returns the rewrites of its
+    references (relative to the model's own folder)."""
     replacements: list[tuple[inpscan.Reference, str]] = []
     external_index = 0
-
     for ref in inpscan.scan(text):
         if ref.kind == inpscan.RefKind.PLUGIN:
             problems.append(f"[PLUGINS] line {ref.line + 1} loads native library {ref.text!r}; "
@@ -113,7 +94,7 @@ def package_swmm_model(
             rel = f"external/{external_index}-{real.name}"
             external_index += 1
             findings.append(f"{ref.text!r} is outside the model folder; packaged as {rel!r}")
-        package_path = f"{MODEL_DIR}/{rel}"
+        package_path = f"{prefix}/{rel}"
         try:
             check_safe_path(package_path)
         except ValueError as exc:
@@ -126,7 +107,12 @@ def package_swmm_model(
         sources[package_path] = real
         roles[package_path] = (FileRole.INPUT, ref.text)
         replacements.append((ref, rel + decorator))
+    return replacements
 
+
+def _sidecars(extra_files: Mapping[str, str | Path] | None, reserved: set[str],
+              sources: dict[str, Path], roles: dict[str, tuple[FileRole, str | None]],
+              problems: list[str]) -> None:
     for rel, local in (extra_files or {}).items():
         package_path = f"{MODEL_DIR}/{PurePosixPath(rel).as_posix()}"
         source = Path(local).resolve()
@@ -135,7 +121,7 @@ def package_swmm_model(
         except ValueError as exc:
             problems.append(f"extra file {rel!r}: {exc}")
             continue
-        if package_path == f"{MODEL_DIR}/model.inp" or package_path in sources:
+        if package_path in reserved or package_path in sources:
             problems.append(f"extra file {rel!r} would replace a file the model references")
             continue
         if not source.is_file():
@@ -145,6 +131,67 @@ def package_swmm_model(
         # The name the model's folder gives it, never the local path it was copied from.
         roles[package_path] = (FileRole.SIDECAR, PurePosixPath(rel).as_posix())
 
+
+def _manifest(staging: Path, sources: dict[str, Path],
+              roles: dict[str, tuple[FileRole, str | None]], findings: list[str],
+              max_files: int, max_bytes: int,
+              instances: list[ComponentInstance] | None = None) -> Package:
+    if len(sources) > max_files:
+        raise PackagingError([f"the package has {len(sources)} files; the limit is {max_files}"])
+    files: list[ManifestFile] = []
+    for path, source in sorted(sources.items()):
+        before = _stamp(source)
+        digest = sha256_file(source)
+        after = _stamp(source)
+        if after != before and sha256_file(source) != digest:
+            # Only a real content change fails; some filesystems settle timestamps late.
+            raise PackagingError([f"{source} changed while it was being packaged; try again"])
+        role, original = roles[path]
+        files.append(ManifestFile(path=path, sha256=digest, size=after[0], role=role,
+                                  source=original))
+    total = sum(f.size for f in files)
+    if total > max_bytes:
+        raise PackagingError([f"the package is {total} bytes; the limit is {max_bytes}"])
+
+    manifest = RevisionManifest(
+        files=files, components=[OPENSWMM_ENGINE_COMPONENT], total_bytes=total,
+        created_at=datetime.now(timezone.utc),
+        packaged_by=f"hydrocouple.platform/{__version__} on {_platform.system()} "
+                    f"{_platform.machine()} ({os.sep!r} paths)",
+        findings=findings, component_instances=instances,
+    )
+    (staging / "revision-manifest.json").write_bytes(
+        canonical_json(manifest.model_dump(mode="json", by_alias=True)))
+    return Package(manifest=manifest, staging_dir=staging, _sources=sources)
+
+
+def package_swmm_model(
+    inp_path: str | Path,
+    staging_dir: str | Path,
+    *,
+    extra_files: Mapping[str, str | Path] | None = None,
+    max_files: int = 5000,
+    max_bytes: int = 20 * 1024**3,
+) -> Package:
+    """Package one SWMM model as a one-component HydroCouple composition.
+
+    ``extra_files`` maps a path relative to the model folder (``data/observed.csv``) to a
+    local file the model does not reference itself, such as observations a study compares
+    with or an event's rain series. Each is packaged at that path inside ``model/`` with the
+    role ``sidecar``, hashed like every input and verified by the runner.
+    """
+    inp_path = Path(inp_path).resolve()
+    model_dir = inp_path.parent
+    staging = Path(staging_dir).resolve()
+    staging.mkdir(parents=True, exist_ok=True)
+    text = inp_path.read_text(encoding="utf-8")
+
+    problems: list[str] = []
+    findings: list[str] = []
+    sources: dict[str, Path] = {}
+    roles: dict[str, tuple[FileRole, str | None]] = {}
+    replacements = _scan_model(text, model_dir, MODEL_DIR, sources, roles, problems, findings)
+    _sidecars(extra_files, {f"{MODEL_DIR}/model.inp"}, sources, roles, problems)
     if problems:
         raise PackagingError(problems)
 
@@ -176,32 +223,94 @@ def package_swmm_model(
     composition_file.write_bytes(json.dumps(composition, indent=2).encode() + b"\n")
     sources["composition.json"] = composition_file
     roles["composition.json"] = (FileRole.COMPOSITION, None)
+    return _manifest(staging, sources, roles, findings, max_files, max_bytes)
 
-    if len(sources) > max_files:
-        raise PackagingError([f"the package has {len(sources)} files; the limit is {max_files}"])
 
-    files: list[ManifestFile] = []
-    for path, source in sorted(sources.items()):
-        before = _stamp(source)
-        digest = sha256_file(source)
-        after = _stamp(source)
-        if after != before and sha256_file(source) != digest:
-            # Only a real content change fails; some filesystems settle timestamps late.
-            raise PackagingError([f"{source} changed while it was being packaged; try again"])
-        role, original = roles[path]
-        files.append(ManifestFile(path=path, sha256=digest, size=after[0], role=role,
-                                  source=original))
-    total = sum(f.size for f in files)
-    if total > max_bytes:
-        raise PackagingError([f"the package is {total} bytes; the limit is {max_bytes}"])
+def package_composition(
+    composition_path: str | Path,
+    staging_dir: str | Path,
+    *,
+    extra_files: Mapping[str, str | Path] | None = None,
+    max_files: int = 5000,
+    max_bytes: int = 20 * 1024**3,
+) -> Package:
+    """Package an authored HydroCouple composition of OpenSWMM engine components.
 
-    manifest = RevisionManifest(
-        files=files, components=[OPENSWMM_ENGINE_COMPONENT], total_bytes=total,
-        created_at=datetime.now(timezone.utc),
-        packaged_by=f"hydrocouple.platform/{__version__} on {_platform.system()} "
-                    f"{_platform.machine()} ({os.sep!r} paths)",
-        findings=findings,
-    )
-    (staging / "revision-manifest.json").write_bytes(
-        canonical_json(manifest.model_dump(mode="json", by_alias=True)))
-    return Package(manifest=manifest, staging_dir=staging, _sources=sources)
+    The composition is validated against the HydroCouple composition schema; every component
+    must be the OpenSWMM engine component, with a ``configuration`` naming its ``model`` (a
+    path in the composition's folder) and ``role``. Each model is packaged once under
+    ``model/`` at its path in that folder, with the files it references, as a single model is;
+    the packaged composition names the packaged models and keeps everything else as authored
+    (the runner points each component's ``output_directory`` into its outputs). The revision
+    manifest lists the component instances. ``extra_files`` are sidecars, as for one model.
+    """
+    import jsonschema
+
+    from ..runner.core import load_schema
+
+    composition_path = Path(composition_path).resolve()
+    folder = composition_path.parent
+    staging = Path(staging_dir).resolve()
+    staging.mkdir(parents=True, exist_ok=True)
+    try:
+        spec = json.loads(composition_path.read_text(encoding="utf-8"))
+        jsonschema.validate(spec, load_schema("composition-1.1.json"))
+    except (ValueError, jsonschema.ValidationError) as exc:
+        message = exc.message if isinstance(exc, jsonschema.ValidationError) else str(exc)
+        raise PackagingError([f"{composition_path.name} is not a HydroCouple composition: "
+                              f"{message}"]) from None
+
+    problems: list[str] = []
+    findings: list[str] = []
+    sources: dict[str, Path] = {}
+    roles: dict[str, tuple[FileRole, str | None]] = {}
+    instances: list[ComponentInstance] = []
+    models: dict[str, str] = {}  # model path in the folder -> its packaged path
+    for c in spec["components"]:
+        cid = c.get("id", "?")
+        info = (c.get("info") or {}).get("component_info_id")
+        config = (c.get("arguments") or {}).get("configuration")
+        if info != OPENSWMM_ENGINE_COMPONENT:
+            problems.append(f"component {cid!r} is {info!r}; only the OpenSWMM engine "
+                            f"component ({OPENSWMM_ENGINE_COMPONENT}) can be packaged")
+            continue
+        if not isinstance(config, dict) or not isinstance(config.get("model"), str):
+            problems.append(f"component {cid!r} names no configuration model")
+            continue
+        rel = PurePosixPath(config["model"]).as_posix()
+        try:
+            check_safe_path(rel)
+        except ValueError as exc:
+            problems.append(f"component {cid!r}: model {exc}")
+            continue
+        model = (folder / rel).resolve()
+        if folder not in model.parents or not model.is_file():
+            problems.append(f"component {cid!r}: model {rel!r} is not a file in the "
+                            "composition's folder")
+            continue
+        if rel not in models:
+            prefix = f"{MODEL_DIR}/{PurePosixPath(rel).parent}".rstrip("/.")
+            text = model.read_text(encoding="utf-8")
+            replacements = _scan_model(text, model.parent, prefix, sources, roles, problems,
+                                       findings)
+            packaged = staging / MODEL_DIR / rel
+            packaged.parent.mkdir(parents=True, exist_ok=True)
+            packaged.write_text(inpscan.rewrite(text, replacements), encoding="utf-8")
+            models[rel] = f"{MODEL_DIR}/{rel}"
+            sources[models[rel]] = packaged
+            roles[models[rel]] = (FileRole.MODEL, rel)
+        config["model"] = models[rel]
+        instances.append(ComponentInstance(id=cid, component_info_id=info,
+                                           role=str(config.get("role", "complete_model")),
+                                           model=models[rel]))
+    if len({i.id for i in instances}) != len(instances):
+        problems.append("two components share an id")
+    _sidecars(extra_files, set(models.values()), sources, roles, problems)
+    if problems:
+        raise PackagingError(problems)
+
+    composition_file = staging / "composition.json"
+    composition_file.write_bytes(json.dumps(spec, indent=2).encode() + b"\n")
+    sources["composition.json"] = composition_file
+    roles["composition.json"] = (FileRole.COMPOSITION, None)
+    return _manifest(staging, sources, roles, findings, max_files, max_bytes, instances)
