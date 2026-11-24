@@ -48,11 +48,13 @@ hydrocouple_theme.configure(
         "kicker": "HydroCouple Execution Platform",
         "title": "Simulations on compute you control",
         "lede": "The control plane records each SWMM simulation or HydroCouple composition, and an "
-                "agent at your own site leases the work, runs it and returns results with their provenance.",
+                "agent at your own site leases the work, runs it and returns results with their "
+                "provenance.",
         "actions": [
             {"label": "First local run", "url": "first-run", "style": "solid"},
             {"label": "API reference", "url": "api", "style": "ghost"},
-            {"label": "MCP server manual", "url": "https://www.hydrocouple.org/openswmm.mcp/", "style": "ghost"},
+            {"label": "MCP server manual", "url": "https://www.hydrocouple.org/openswmm.mcp/",
+             "style": "ghost"},
         ],
     },
 )

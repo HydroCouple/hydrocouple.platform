@@ -92,7 +92,8 @@ markers = [
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
-extend-exclude = ["src/hydrocouple_platform/db/migrations/versions"]
+# docs/_hydrocouple is the HydroCouple documentation theme, copied unchanged into every manual.
+extend-exclude = ["src/hydrocouple_platform/db/migrations/versions", "docs/_hydrocouple"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]
