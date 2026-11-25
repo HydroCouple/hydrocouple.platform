@@ -75,3 +75,26 @@ jobs:
       - run: python -m sphinx -W --keep-going -b html docs build/docs
       - uses: actions/upload-artifact@v4
         with: { name: platform-docs, path: build/docs }
+
+  # Publishes the manual built above to https://www.hydrocouple.org/hydrocouple.platform/.
+  # The github-pages environment must allow the branch (main, dev).
+  deploy-docs:
+    name: Deploy documentation to GitHub Pages
+    if: |
+      github.event_name != 'pull_request'
+      && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    needs: docs
+    runs-on: ubuntu-latest
+    permissions: { pages: write, id-token: write }
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency: { group: pages, cancel-in-progress: false }
+    steps:
+      - uses: actions/download-artifact@v5
+        with: { name: platform-docs, path: site }
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with: { path: site }
+      - id: deploy
+        uses: actions/deploy-pages@v5
