@@ -85,6 +85,19 @@
           ],
           "default": null,
           "title": "Max Runs"
+        },
+        "max_wall_time_seconds": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Wall Time Seconds"
         }
       },
       "title": "Budget",

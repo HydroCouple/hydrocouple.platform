@@ -245,6 +245,7 @@ class StudyServices(ServiceBase):
             if principal.agent_session_id:
                 session = self._agent_session(  # type: ignore[attr-defined]
                     s, principal, principal.agent_session_id, checked.project, lock=True)
+                self._check_wall_time(session)  # type: ignore[attr-defined]
                 reasons = self._study_budget_reasons(s, session, checked, req, spend)
             actor = self.actor_of(s, principal, req.tool_call_id, session)
 
@@ -321,6 +322,9 @@ class StudyServices(ServiceBase):
                 raise PlatformError(
                     ErrorCode.FORBIDDEN, "an AI agent session submits batches only to studies "
                     "it created", next_action="Create a study under this agent session.")
+            if principal.agent_session_id:
+                self._check_wall_time(  # type: ignore[attr-defined]
+                    s.get(AgentSession, principal.agent_session_id))
             existing = s.scalar(select(StudyBatch).where(
                 StudyBatch.study_id == study.id, StudyBatch.idempotency_key == idempotency_key))
             if existing is not None:

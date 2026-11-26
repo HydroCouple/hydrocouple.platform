@@ -177,6 +177,8 @@ class AgentSession(Base):
     runs_submitted: Mapped[int] = mapped_column(Integer, default=0)
     # Estimated spend of every run and study the session submitted that had an estimate.
     estimated_spend: Mapped[float] = mapped_column(Float, default=0.0)
+    # When the reconciler ended the session's work at its wall time (once).
+    work_ended_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     created_at: Mapped[datetime] = _ts()
     expires_at: Mapped[datetime] = _ts()
     revoked_at: Mapped[datetime | None] = _ts(nullable=True, default=False)

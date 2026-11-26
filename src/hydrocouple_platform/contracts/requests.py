@@ -23,6 +23,9 @@ class Budget(_Model):
     max_evaluations: int | None = Field(default=None, ge=0)
     max_concurrent_attempts: int | None = Field(default=None, ge=0)
     max_estimated_spend: float | None = Field(default=None, ge=0)
+    # How long the session's work may run, from its start; past it the reconciler cancels
+    # its active runs and studies and it takes no new work, but its results stay readable.
+    max_wall_time_seconds: int | None = Field(default=None, gt=0)
     allowed_targets: list[str] | None = None
     allowed_job_classes: list[JobClass] | None = None
 

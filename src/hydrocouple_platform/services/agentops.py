@@ -589,4 +589,5 @@ class AgentServices(ServiceBase):
         counts.update(self.reconcile_studies(limit))  # type: ignore[attr-defined]
         counts.update(self.reconcile_deletions(limit))  # type: ignore[attr-defined]
         counts.update(self.reconcile_schedules(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_agent_sessions(limit))  # type: ignore[attr-defined]
         return counts

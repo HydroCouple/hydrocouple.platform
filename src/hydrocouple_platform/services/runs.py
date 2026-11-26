@@ -340,6 +340,7 @@ class RunServices(ServiceBase):
             if principal.agent_session_id:
                 session = self._agent_session(s, principal, principal.agent_session_id,
                                               checked.project, lock=True)
+                self._check_wall_time(session)  # type: ignore[attr-defined]
                 reasons = self._budget_reasons(s, session, checked, spend=spend)
             actor = self.actor_of(s, principal, req.tool_call_id, session)
 

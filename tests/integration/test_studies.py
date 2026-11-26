@@ -1051,3 +1051,38 @@ def test_a_spend_cap_holds_a_study_estimated_beyond_it_for_a_person(setup):
     approval = svc.list_approvals(world.admin, world.project_id)[0]
     assert any("estimated at 0.2 USD" in r and "0.1 of 0.3 left" in r
                for r in approval["reasons"])
+
+
+def test_a_session_past_its_wall_time_stops_its_work_and_takes_no_more(setup, clock):
+    world, revision = setup
+    svc = world.services
+    timed = svc.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code",
+        budget=Budget(max_wall_time_seconds=60)))
+    agent = svc.session_principal(timed["agent_session_token"])
+    untimed = session_principal(world, Budget())
+    run = svc.submit_run(agent, world.run_request(revision["revision_id"]), "key-wall-1")
+    other = svc.submit_run(untimed, world.run_request(revision["revision_id"]), "key-wall-2")
+    study = create(world, revision, principal=agent, max_evaluations=20)
+    assert svc.agent_session_view(agent).remaining["wall_time_seconds"] > 0
+
+    clock.advance(61)
+    assert svc.reconcile()["sessions_out_of_time"] == 1
+    assert svc.reconcile()["sessions_out_of_time"] == 0  # once
+    assert svc.get_job(world.admin, run.job_id).state == "CANCELLED"
+    assert svc.get_job(world.admin, other.job_id).state != "CANCELLED"
+    assert svc.get_study(agent, study.study_id).state == "CANCELLED"  # still readable
+    with transaction(svc._factory) as s:
+        audit = s.scalar(select(AuditRecord).where(
+            AuditRecord.action == "agent_session.wall_time"))
+    assert audit.object_id == timed["agent_session_id"]
+    assert audit.details["studies_cancelled"] == [study.study_id]
+    for attempt in (lambda: svc.submit_run(agent, world.run_request(revision["revision_id"]),
+                                           "key-wall-3"),
+                    lambda: svc.submit_batch(agent, study.study_id,
+                                             BatchSubmit(candidates=candidates(1)),
+                                             "batch-key-wall")):
+        with pytest.raises(PlatformError) as refused:
+            attempt()
+        assert refused.value.code == ErrorCode.FORBIDDEN and "wall time" in str(refused.value)
+    assert svc.agent_session_view(agent).remaining["wall_time_seconds"] == 0

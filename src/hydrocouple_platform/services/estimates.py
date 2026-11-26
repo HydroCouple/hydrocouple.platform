@@ -9,7 +9,7 @@ require a matching, unexpired estimate for any submission above a number of eval
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import func, select
@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.requests import AgentSessionView, Budget, OrganizationPolicy, PriceTable
-from ..contracts.states import JOB_TERMINAL, JobState
+from ..contracts.states import JOB_HELD, JOB_TERMINAL, JobState
+from ..contracts.studies import StudyState
 from ..db.models import (
     AgentSession,
     ComputeTarget,
@@ -80,6 +81,21 @@ class EstimateServices(ServiceBase):
         return {"runs": session.runs_submitted, "evaluations": reserved,
                 "concurrent_attempts": active + pools,
                 "estimated_spend": session.estimated_spend}
+
+    @staticmethod
+    def _work_ends_at(session: AgentSession) -> datetime | None:
+        seconds = Budget.model_validate(session.budget).max_wall_time_seconds
+        return None if seconds is None else session.created_at + timedelta(seconds=seconds)
+
+    def _check_wall_time(self, session: AgentSession) -> None:
+        """Refuse new work from a session whose wall time is over."""
+        ends = self._work_ends_at(session)
+        if ends is not None and ends <= self.now():
+            raise PlatformError(
+                ErrorCode.FORBIDDEN,
+                f"the agent session's wall time ended at {ends.isoformat()}; it takes no new work",
+                next_action="Its results stay readable; ask the person for a new agent session "
+                            "to run more.")
 
     @staticmethod
     def _spend_reason(budget: Budget, used: dict[str, float], spend: float | None,
@@ -172,10 +188,60 @@ class EstimateServices(ServiceBase):
             row = s.get(AgentSession, principal.agent_session_id)
             budget = Budget.model_validate(row.budget)
             used = self._session_use(s, row)
+            used["wall_time_seconds"] = round(
+                max((self.now() - row.created_at).total_seconds(), 0.0), 3)
             limits = {"runs": budget.max_runs, "evaluations": budget.max_evaluations,
                       "concurrent_attempts": budget.max_concurrent_attempts,
-                      "estimated_spend": budget.max_estimated_spend}
+                      "estimated_spend": budget.max_estimated_spend,
+                      "wall_time_seconds": budget.max_wall_time_seconds}
             remaining = {k: None if limit is None else max(limit - used[k], 0)
                          for k, limit in limits.items()}
             return AgentSessionView(agent_session_id=row.id, expires_at=row.expires_at,
                                     budget=budget, used=used, remaining=remaining)
+
+    # -- the wall time ---------------------------------------------------------------------
+
+    def reconcile_agent_sessions(self, limit: int = 200) -> dict[str, int]:
+        """End the work of sessions past their wall time: cancel their active runs and live
+        studies, once, each session in its own transaction."""
+        counts = {"sessions_out_of_time": 0}
+        now = self.now()
+        with self.tx() as s:
+            candidates = list(s.scalars(
+                select(AgentSession).where(AgentSession.work_ended_at.is_(None),
+                                           AgentSession.revoked_at.is_(None))
+                .order_by(AgentSession.created_at).limit(limit)))
+            due = [row.id for row in candidates
+                   if (ends := self._work_ends_at(row)) is not None and ends <= now]
+        for session_id in due:
+            studies: list[str] = []
+            with self.tx() as s:
+                row = s.get(AgentSession, session_id, with_for_update=True)
+                if row.work_ended_at is not None:
+                    continue
+                row.work_ended_at = now
+                jobs = 0
+                for job in s.scalars(
+                        select(Job).join(Run, Run.id == Job.run_id)
+                        .where(Run.agent_session_id == row.id, Job.study_id.is_(None),
+                               Job.state.in_(ACTIVE_STATES)).with_for_update()):
+                    if JobState(job.state) in JOB_HELD:
+                        job.cancel_requested, job.updated_at = True, now
+                    else:
+                        self._set_state(job, JobState.CANCELLED, failure={
+                            "reason": "the agent session's wall time ended"})
+                    jobs += 1
+                studies = [st.id for st in s.scalars(select(Study).where(
+                    Study.agent_session_id == row.id,
+                    Study.state.in_(["PENDING_APPROVAL", "OPEN", "CLOSED"])).with_for_update())]
+                for study_id in studies:
+                    self._end_study(  # type: ignore[attr-defined]
+                        s, s.get(Study, study_id), StudyState.CANCELLED,
+                        {"reason": "the agent session's wall time ended"})
+                self.audit(s, row.organization_id, {"system": "reconciler"},
+                           "agent_session.wall_time", "agent_session", row.id,
+                           {"jobs_cancelled": jobs, "studies_cancelled": studies})
+            for study_id in studies:
+                self._stop_pool(study_id)  # type: ignore[attr-defined]
+            counts["sessions_out_of_time"] += 1
+        return counts
