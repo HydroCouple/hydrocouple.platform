@@ -93,6 +93,10 @@ class DownloadBody(_Body):
     paths: list[str]
 
 
+class ChunkDownloadBody(_Body):
+    chunk_ids: list[str]
+
+
 def _bearer(authorization: str | None) -> str:
     if not authorization or not authorization.lower().startswith("bearer "):
         raise PlatformError(ErrorCode.UNAUTHENTICATED, "a bearer token is required",
@@ -324,6 +328,10 @@ def create_app(
     @app.post("/v1/studies", status_code=201)
     def create_study(body: StudyCreate, p: User, key: IdempotencyKey = None) -> StudyView:
         return svc.create_study(p, body, _key(key))
+
+    @app.post("/v1/studies/{study_id}/downloads", status_code=202)
+    def study_downloads(study_id: str, body: ChunkDownloadBody, p: User) -> dict:
+        return svc.request_study_downloads(p, study_id, body.chunk_ids)
 
     @app.post("/v1/studies/estimate")
     def estimate_study(body: StudyCreate, p: User) -> Estimate:

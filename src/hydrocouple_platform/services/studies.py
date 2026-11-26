@@ -30,6 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from ..contracts.agent import GrantMode
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import FailureClass, JobClass, JobSpec
 from ..contracts.manifests import check_safe_path, sha256_of
@@ -927,6 +928,28 @@ class StudyServices(ServiceBase):
                 result["pareto"] = [ok[i] for i in front]
                 result["best"] = ok[best]
             return result
+
+    def request_study_downloads(self, principal: Principal, study_id: str,
+                                chunk_ids: list[str]) -> dict:
+        """Download grants for chunks' evaluation records, so a reader outside the control
+        plane can check a study's numbers against the objects by checksum."""
+        if not chunk_ids:
+            raise PlatformError(ErrorCode.VALIDATION_ERROR, "name at least one chunk")
+        with self.tx() as s:
+            study = self.owned(s, Study, study_id, principal, "viewer")
+            self._not_deleted(s.get(Run, study.run_id))  # type: ignore[attr-defined]
+            chunks = {c.id: c for c in s.scalars(select(ChunkRow).where(
+                ChunkRow.study_id == study.id, ChunkRow.id.in_(chunk_ids)))}
+            missing = [c for c in chunk_ids if c not in chunks or chunks[c].object_key is None]
+            if missing:
+                raise PlatformError(ErrorCode.NOT_FOUND,
+                                    "no evaluation records for chunks: " + ", ".join(missing))
+            objects = [{"key": chunks[c].object_key, "sha256": chunks[c].object_sha256,
+                        "size": chunks[c].object_size} for c in chunk_ids]
+            grant = self._grant_request(s, study.organization_id, study.target_id, principal,
+                                        GrantMode.DOWNLOAD, objects, run_id=study.run_id)
+            return {"grant_request_id": grant,
+                    "keys": {c: chunks[c].object_key for c in chunk_ids}}
 
     def study_manifest(self, principal: Principal, study_id: str) -> dict:
         """Lineage of a study: its definition, every batch and chunk with the object holding

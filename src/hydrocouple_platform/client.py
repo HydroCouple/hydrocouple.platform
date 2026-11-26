@@ -301,6 +301,25 @@ class PlatformClient:
     def study_manifest(self, study_id: str) -> dict:
         return self._call("GET", f"/v1/studies/{study_id}/manifest")
 
+    def download_study_chunks(self, study_id: str, chunk_ids: list[str], destination: Path,
+                              timeout: float = 300.0) -> dict[str, Path]:
+        """Download chunks' evaluation records from storage into ``destination``, one
+        ``<chunk_id>.jsonl`` each; the agent grants only objects matching their checksums."""
+        request = self._call("POST", f"/v1/studies/{study_id}/downloads",
+                             json={"chunk_ids": chunk_ids})
+        grants = self.wait_for_grants(request["grant_request_id"], timeout)
+        if grants["state"] != "FULFILLED":
+            raise PlatformError(ErrorCode.NOT_READY, "download grants were refused",
+                                details={"problems": grants.get("problems")})
+        destination.mkdir(parents=True, exist_ok=True)
+        by_key = {g["key"]: g for g in grants["grants"]}
+        out: dict[str, Path] = {}
+        for chunk_id in chunk_ids:
+            target = destination / f"{chunk_id}.jsonl"
+            _get(by_key[request["keys"][chunk_id]], target, self._http)
+            out[chunk_id] = target
+        return out
+
     def create_schedule(self, request: ScheduleCreate | dict,
                         idempotency_key: str | None = None) -> dict:
         """Register a schedule. Retrying with the same key returns the same schedule."""

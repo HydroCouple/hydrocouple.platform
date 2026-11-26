@@ -25,6 +25,7 @@ from conftest import DATA
 from hydrocouple_platform.agent import Agent, AgentClient
 from hydrocouple_platform.agent.adapters.local import LocalPoolAdapter
 from hydrocouple_platform.client import PlatformClient
+from hydrocouple_platform.contracts.errors import ErrorCode, PlatformError
 from hydrocouple_platform.contracts.jobs import EgressPolicy
 from hydrocouple_platform.contracts.studies import StudyLineage
 from hydrocouple_platform.db.models import EvaluationChunk
@@ -269,6 +270,16 @@ def test_an_alternatives_study_has_the_same_manifest_locally_and_on_the_platform
         run_platform_study(config, opt, artifact_dir / "platform", client=client,
                            project_id=world.project_id, revision_id=revision["revision_id"],
                            target_id=world.target_id, inp_path="model/model.inp")
+        # A reader outside the control plane fetches the records through grants and checks them.
+        lineage = StudyLineage.model_validate_json(
+            (artifact_dir / "platform" / "study-lineage.json").read_text())
+        chunks = [c for c in lineage.chunks if c.object is not None]
+        fetched = client.download_study_chunks(
+            lineage.study_id, [c.chunk_id for c in chunks], artifact_dir / "fetched")
+        by_key = {c.object.key: fetched[c.chunk_id] for c in chunks}
+        with pytest.raises(PlatformError) as unknown:
+            client.download_study_chunks(lineage.study_id, ["chk_unknown"], artifact_dir / "x")
+        assert unknown.value.code == ErrorCode.NOT_FOUND
 
     local, remote = (
         StudyManifest.model_validate_json((artifact_dir / side / "study-manifest.json").read_text())
@@ -279,13 +290,12 @@ def test_an_alternatives_study_has_the_same_manifest_locally_and_on_the_platform
     assert remote.runtime["revision_id"] == revision["revision_id"]
     assert set(local.definition.model_inputs) == {"model/model.inp"}
     # The platform run keeps where every evaluation came from, and it checks out.
-    lineage = StudyLineage.model_validate_json(
-        (artifact_dir / "platform" / "study-lineage.json").read_text())
     records = [json.loads(line) for line in
                (artifact_dir / "platform" / "evaluation-lineage.jsonl").read_text().splitlines()]
     assert [r["evaluation"] for r in records] == [1, 2, 3]
     assert remote.runtime["lineage_manifest_sha256"] == lineage.manifest_sha256
     assert lineage.check_evaluations(records, read_from(world.store, artifact_dir)) == []
+    assert lineage.check_evaluations(records, lambda key: by_key[key].read_bytes()) == []
 
 
 def test_a_latin_hypercube_study_draws_the_same_design_locally_and_on_the_platform(
