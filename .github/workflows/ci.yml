@@ -75,6 +75,10 @@ jobs:
       - run: python -m sphinx -W --keep-going -b html docs build/docs
       - uses: actions/upload-artifact@v4
         with: { name: platform-docs, path: build/docs }
+      # Packaged here, not in the deploy job: deploy-pages can look the artifact up before an
+      # upload made in its own job is listed ("No artifacts named github-pages").
+      - uses: actions/upload-pages-artifact@v4
+        with: { path: build/docs }
 
   # Publishes the manual built above to https://www.hydrocouple.org/hydrocouple.platform/.
   # The github-pages environment must allow the branch (main, dev).
@@ -91,10 +95,5 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     concurrency: { group: pages, cancel-in-progress: false }
     steps:
-      - uses: actions/download-artifact@v5
-        with: { name: platform-docs, path: site }
-      - uses: actions/configure-pages@v5
-      - uses: actions/upload-pages-artifact@v4
-        with: { path: site }
       - id: deploy
         uses: actions/deploy-pages@v5
