@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from ..contracts.agent import GrantFulfillment, GrantMode
 from ..contracts.errors import ErrorCode, PlatformError
+from ..contracts.manifests import FileRole
 from ..contracts.requests import RevisionCreate
 from ..db.models import (
     ComputeTarget,
@@ -21,10 +22,11 @@ from ..db.models import (
     PlatformSession,
     Project,
     Revision,
+    Study,
     new_id,
 )
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
 
 
 def revision_prefix(organization_id: str, project_id: str, revision_id: str) -> str:
@@ -44,6 +46,22 @@ class RevisionServices(ServiceBase):
             raise PlatformError(ErrorCode.VALIDATION_ERROR,
                                 f"the package has {len(paths)} files; the limit is "
                                 f"{self.settings.max_revision_files}")
+        if manifest.component_instances is not None:
+            models = {f.path for f in manifest.files if f.role == FileRole.MODEL}
+            ids = [i.id for i in manifest.component_instances]
+            if not ids or len(set(ids)) != len(ids):
+                raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                    "the manifest's component instances need distinct ids")
+            for i in manifest.component_instances:
+                if i.model not in models:
+                    raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                        f"component {i.id} runs {i.model}, which the manifest "
+                                        "does not list as a model")
+            if {i.component_info_id for i in manifest.component_instances} != set(
+                    manifest.components):
+                raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                    "the manifest's components and its component instances "
+                                    "name different components")
         total = sum(f.size for f in manifest.files)
         if total != manifest.total_bytes or total > self.settings.max_revision_bytes:
             raise PlatformError(ErrorCode.VALIDATION_ERROR,
@@ -56,6 +74,20 @@ class RevisionServices(ServiceBase):
                 raise PlatformError(ErrorCode.NOT_FOUND, f"target {body.target_id} was not found")
             if target.revoked_at is not None:
                 raise PlatformError(ErrorCode.TARGET_REVOKED, "the target was revoked")
+            lineage = manifest.derived_from
+            if lineage is not None:  # a derived revision names a base and a study the caller sees
+                base = self.owned(s, Revision, lineage.revision_id, principal, "viewer")
+                if (base.project_id != project.id
+                        or base.manifest_sha256 != lineage.revision_manifest_sha256):
+                    raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                        f"derived_from names revision {lineage.revision_id} "
+                                        "with a manifest hash it does not have, or in another "
+                                        "project")
+                if lineage.study_id is not None:
+                    study = self.owned(s, Study, lineage.study_id, principal, "viewer")
+                    if study.revision_id != base.id:
+                        raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                            f"study {study.id} did not evaluate revision {base.id}")
             if body.session_id is not None:
                 session = self.owned(s, PlatformSession, body.session_id, principal, "viewer")
                 if session.project_id != project.id:
@@ -77,8 +109,9 @@ class RevisionServices(ServiceBase):
                  for f in manifest.files],
                 revision_id=rev_id,
             )
-            self.audit(s, project.organization_id, human_actor(principal), "revision.create",
-                       "revision", rev_id, {"manifest_sha256": manifest.digest()})
+            self.audit(s, project.organization_id, self.audit_actor(s, principal),
+                       "revision.create", "revision", rev_id,
+                       {"manifest_sha256": manifest.digest()})
             return {"revision_id": rev_id, "state": "UPLOADING", "grant_request_id": grant,
                     "storage_prefix": prefix, "manifest_sha256": manifest.digest()}
 

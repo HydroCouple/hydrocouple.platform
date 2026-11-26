@@ -7,6 +7,7 @@ flag and ``next_action`` whether they call in process or over HTTPS.
 
 from __future__ import annotations
 
+import copy
 import shutil
 import time
 import uuid
@@ -18,6 +19,8 @@ import httpx
 
 from .contracts.errors import ErrorBody, ErrorCode, PlatformError
 from .contracts.requests import RunRequest
+from .contracts.schedules import ProposalCreate, ScheduleCreate
+from .contracts.studies import StudyCreate
 
 
 class PlatformClient:
@@ -29,9 +32,25 @@ class PlatformClient:
         headers = {"Authorization": f"Bearer {token}"}
         self._http = httpx.Client(base_url=base_url, headers=headers, transport=transport,
                                   timeout=timeout)
+        self._headers: dict[str, str] = {}
+        self._owns_http = True
+
+    def for_tool_call(self, tool_call_id: str | None) -> PlatformClient:
+        """This client, naming ``tool_call_id`` (an MCP tool call) on every request it makes.
+
+        The view shares this client's connection; closing it leaves the connection open.
+        The platform records the call in the actor chain of whatever a request changes.
+        """
+        if not tool_call_id:
+            return self
+        view = copy.copy(self)
+        view._headers = {**self._headers, "X-HCP-Tool-Call-Id": tool_call_id}
+        view._owns_http = False
+        return view
 
     def close(self) -> None:
-        self._http.close()
+        if self._owns_http:
+            self._http.close()
 
     def __enter__(self) -> PlatformClient:
         return self
@@ -40,6 +59,8 @@ class PlatformClient:
         self.close()
 
     def _call(self, method: str, path: str, **kw) -> Any:
+        if self._headers:
+            kw["headers"] = {**self._headers, **(kw.get("headers") or {})}
         response = self._http.request(method, path, **kw)
         if response.status_code >= 400:
             raise _error(response)
@@ -66,12 +87,25 @@ class PlatformClient:
     def revoke_target(self, target_id: str) -> None:
         self._call("POST", f"/v1/targets/{target_id}/revoke")
 
+    def set_target_prices(self, target_id: str, price_table: dict) -> dict:
+        return self._call("PUT", f"/v1/targets/{target_id}/prices", json=price_table)
+
+    def set_policy(self, organization_id: str, policy: dict) -> dict:
+        return self._call("PUT", f"/v1/organizations/{organization_id}/policy", json=policy)
+
+    def agent_session(self) -> dict:
+        """The calling agent session's budget, what it has used, and what is left."""
+        return self._call("GET", "/v1/agent-session")
+
     def add_member(self, organization_id: str, issuer: str, subject: str, role: str) -> None:
         self._call("POST", f"/v1/organizations/{organization_id}/members",
                    json={"issuer": issuer, "subject": subject, "role": role})
 
     def create_session(self, project_id: str, name: str) -> dict:
         return self._call("POST", f"/v1/projects/{project_id}/sessions", json={"name": name})
+
+    def list_sessions(self, project_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/projects/{project_id}/sessions")
 
     def create_agent_session(self, **body) -> dict:
         return self._call("POST", "/v1/agent-sessions", json=body)
@@ -157,12 +191,36 @@ class PlatformClient:
     def results(self, run_id: str) -> dict:
         return self._call("GET", f"/v1/runs/{run_id}/results")
 
+    def attempt_manifest(self, run_id: str) -> dict:
+        """The published attempt's manifest (``attempt_manifest``) and its checksum."""
+        return self._call("GET", f"/v1/runs/{run_id}/manifest")
+
     def wait_for_job(self, job_id: str, timeout: float = 600.0, interval: float = 0.5) -> dict:
         terminal = {"SUCCEEDED", "FAILED", "CANCELLED", "TIMED_OUT", "REJECTED"}
         deadline = time.monotonic() + timeout
         while True:
             view = self.job(job_id)
             if view["state"] in terminal or time.monotonic() > deadline:
+                return view
+            time.sleep(interval)
+
+    def delete_run(self, run_id: str) -> dict:
+        """Ask for a run's results to be erased; returns the deletion to follow."""
+        return self._call("DELETE", f"/v1/runs/{run_id}")
+
+    def delete_study(self, study_id: str) -> dict:
+        return self._call("DELETE", f"/v1/studies/{study_id}")
+
+    def deletion(self, deletion_id: str) -> dict:
+        return self._call("GET", f"/v1/deletions/{deletion_id}")
+
+    def wait_for_deletion(self, deletion_id: str, timeout: float = 3600.0,
+                          interval: float = 1.0) -> dict:
+        """Wait until the erasure is confirmed (ERASED) or reported blocked (BLOCKED)."""
+        deadline = time.monotonic() + timeout
+        while True:
+            view = self.deletion(deletion_id)
+            if view["state"] in ("ERASED", "BLOCKED") or time.monotonic() > deadline:
                 return view
             time.sleep(interval)
 
@@ -185,9 +243,115 @@ class PlatformClient:
             out[path] = target
         return out
 
+    # -- studies -------------------------------------------------------------------
 
-def _dump(request: RunRequest | dict) -> dict:
-    return request.model_dump(mode="json") if isinstance(request, RunRequest) else request
+    def create_study(self, request: StudyCreate | dict,
+                     idempotency_key: str | None = None) -> dict:
+        """Register a study. Retrying with the same key returns the same study."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", "/v1/studies", json=_dump(request),
+                          headers={"Idempotency-Key": key})
+
+    def estimate_study(self, request: StudyCreate | dict) -> dict:
+        """Validate and count a would-be study; name its estimate_id when creating it."""
+        return self._call("POST", "/v1/studies/estimate", json=_dump(request))
+
+    def study(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}")
+
+    def submit_batch(self, study_id: str, candidates: list[list[float]],
+                     idempotency_key: str | None = None) -> dict:
+        """Queue candidates for evaluation. Retrying with the same key never queues twice."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", f"/v1/studies/{study_id}/batches",
+                          json={"candidates": candidates}, headers={"Idempotency-Key": key})
+
+    def batch(self, study_id: str, batch_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/batches/{batch_id}")
+
+    def wait_for_batch(self, study_id: str, batch_id: str, timeout: float = 3600.0,
+                       interval: float = 0.25, should_stop=None) -> dict:
+        """Wait until a batch is evaluated, or has ended because its study did."""
+        deadline = time.monotonic() + timeout
+        while True:
+            view = self.batch(study_id, batch_id)
+            if view["state"] != "QUEUED":
+                return view
+            if should_stop is not None and should_stop():
+                return view
+            if time.monotonic() > deadline:
+                raise PlatformError(ErrorCode.NOT_READY,
+                                    f"batch {batch_id} was not evaluated within {timeout:g} s",
+                                    retryable=True, next_action="Query the batch again later.")
+            time.sleep(interval)
+
+    def close_study(self, study_id: str) -> dict:
+        return self._call("POST", f"/v1/studies/{study_id}/close")
+
+    def cancel_study(self, study_id: str) -> dict:
+        return self._call("POST", f"/v1/studies/{study_id}/cancel")
+
+    def study_results(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/results")
+
+    def study_evaluations(self, study_id: str, after: int = 0, limit: int = 500) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/evaluations",
+                          params={"after": after, "limit": limit})
+
+    def study_manifest(self, study_id: str) -> dict:
+        return self._call("GET", f"/v1/studies/{study_id}/manifest")
+
+    def download_study_chunks(self, study_id: str, chunk_ids: list[str], destination: Path,
+                              timeout: float = 300.0) -> dict[str, Path]:
+        """Download chunks' evaluation records from storage into ``destination``, one
+        ``<chunk_id>.jsonl`` each; the agent grants only objects matching their checksums."""
+        request = self._call("POST", f"/v1/studies/{study_id}/downloads",
+                             json={"chunk_ids": chunk_ids})
+        grants = self.wait_for_grants(request["grant_request_id"], timeout)
+        if grants["state"] != "FULFILLED":
+            raise PlatformError(ErrorCode.NOT_READY, "download grants were refused",
+                                details={"problems": grants.get("problems")})
+        destination.mkdir(parents=True, exist_ok=True)
+        by_key = {g["key"]: g for g in grants["grants"]}
+        out: dict[str, Path] = {}
+        for chunk_id in chunk_ids:
+            target = destination / f"{chunk_id}.jsonl"
+            _get(by_key[request["keys"][chunk_id]], target, self._http)
+            out[chunk_id] = target
+        return out
+
+    def create_schedule(self, request: ScheduleCreate | dict,
+                        idempotency_key: str | None = None) -> dict:
+        """Register a schedule. Retrying with the same key returns the same schedule."""
+        key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
+        return self._call("POST", "/v1/schedules", json=_dump(request),
+                          headers={"Idempotency-Key": key})
+
+    def schedule(self, schedule_id: str) -> dict:
+        return self._call("GET", f"/v1/schedules/{schedule_id}")
+
+    def pause_schedule(self, schedule_id: str) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/pause")
+
+    def resume_schedule(self, schedule_id: str) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/resume")
+
+    def proposals(self, schedule_id: str) -> list[dict]:
+        return self._call("GET", f"/v1/schedules/{schedule_id}/proposals")
+
+    def propose_setpoint(self, schedule_id: str, proposal: ProposalCreate | dict) -> dict:
+        return self._call("POST", f"/v1/schedules/{schedule_id}/proposals",
+                          json=_dump(proposal))
+
+    def decide_proposal(self, proposal_id: str, approve: bool, note: str | None = None) -> dict:
+        return self._call("POST", f"/v1/proposals/{proposal_id}/decision",
+                          json={"approve": approve, "note": note})
+
+
+def _dump(request: RunRequest | StudyCreate | dict) -> dict:
+    if isinstance(request, (RunRequest, StudyCreate)):
+        return request.model_dump(mode="json")
+    return request
 
 
 def _error(response: httpx.Response) -> PlatformError:

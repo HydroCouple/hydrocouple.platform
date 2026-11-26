@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import socket
 import tempfile
@@ -36,17 +37,44 @@ from ..contracts.agent import (
     PollResponse,
     ResultAck,
 )
+from ..contracts.deletion import Erasure, ErasureReport
 from ..contracts.errors import ErrorCode, PlatformError
-from ..contracts.jobs import EgressPolicy, FailureClass
+from ..contracts.jobs import EgressPolicy, FailureClass, JobClass
 from ..contracts.manifests import AttemptManifest, sha256_of
 from ..contracts.states import AttemptState
+from ..contracts.studies import (
+    CompletionAck,
+    EvaluationCompletion,
+    EvaluationLeaseRequest,
+    EvaluationLeaseResponse,
+    EvaluationResult,
+    ResultObject,
+)
 from ..runner import EXIT_CANCELLED, EXIT_CLASS
 from ..storage import StorageBackend
 from .adapters import Observation, SchedulerAdapter
-from .egress import filter_diagnostics, filter_event
+from .egress import SUMMARY_LIMIT, filter_diagnostics, filter_event
+from .gateway import RunnerGateway
+from .imagetrust import ImageVerifier, UntrustedImage
 
 log = logging.getLogger(__name__)
 MAX_BUFFERED_EVENTS = 10_000
+MAX_EVALUATION_ERROR = 2000
+
+
+def _trimmed(raw: object) -> object:
+    """One candidate's result from a runner, made reportable: a long error is cut and
+    non-finite costs become an error, so one bad candidate cannot fail its chunk."""
+    if not isinstance(raw, dict):
+        return raw
+    out = dict(raw)
+    costs = out.get("costs")
+    if out.get("error") is None and isinstance(costs, list) and not all(
+            isinstance(c, (int, float)) and math.isfinite(c) for c in costs):
+        out.update(costs=None, error=f"the evaluation returned invalid costs: {costs!r}")
+    if isinstance(out.get("error"), str):
+        out["error"] = out["error"][:MAX_EVALUATION_ERROR]
+    return out
 
 
 class AgentClient:
@@ -71,11 +99,23 @@ class AgentClient:
     def fulfill(self, body: GrantFulfillment) -> None:
         self._post("/v1/agent/grants", body)
 
+    def erasure(self, report: ErasureReport) -> None:
+        self._post("/v1/agent/erasures", report)
+
     def heartbeat(self, token: str, hb: Heartbeat) -> HeartbeatAck:
         return HeartbeatAck.model_validate(self._post("/v1/agent/heartbeat", hb, token))
 
     def result(self, token: str, res: AttemptResult) -> ResultAck:
         return ResultAck.model_validate(self._post("/v1/agent/result", res, token))
+
+    def lease_evaluations(self, token: str, req: EvaluationLeaseRequest
+                          ) -> EvaluationLeaseResponse:
+        return EvaluationLeaseResponse.model_validate(
+            self._post("/v1/agent/evaluations/lease", req, token))
+
+    def complete_evaluations(self, token: str, body: EvaluationCompletion) -> CompletionAck:
+        return CompletionAck.model_validate(
+            self._post("/v1/agent/evaluations/complete", body, token))
 
     def close(self) -> None:
         self._http.close()
@@ -96,11 +136,26 @@ class _Held:
 
 class Agent:
     def __init__(self, client: AgentClient, adapter: SchedulerAdapter, store: StorageBackend,
-                 store_uri: str, egress: EgressPolicy, instance: str | None = None):
+                 store_uri: str, egress: EgressPolicy, instance: str | None = None,
+                 gateway_host: str = "127.0.0.1", gateway_port: int = 0,
+                 gateway_url: str | None = None, images: ImageVerifier | None = None,
+                 allow_unsigned_images: bool = False):
         self.client, self.adapter, self.store = client, adapter, store
         self.store_uri, self.egress = store_uri, egress
         self.instance = instance or f"{socket.gethostname()}-{os.getpid()}"
         self.held: dict[str, _Held] = {}
+        # Started with the first evaluator task; runners reach the control plane only here.
+        self.gateway: RunnerGateway | None = None
+        # Where the gateway listens, and the address runners use (a Service on Kubernetes).
+        self.gateway_host, self.gateway_port, self.gateway_url = (
+            gateway_host, gateway_port, gateway_url)
+        # Container images run only when a pinned key signed them, unless this agent was
+        # explicitly started without image trust (development clusters).
+        self.images, self.allow_unsigned_images = images, allow_unsigned_images
+        if gateway_port:  # a fixed address behind a Service: listen from the start
+            self._gateway()
+        # Adapters whose work outlives the agent (Kubernetes) are asked for it at start.
+        self._adopted = not hasattr(adapter, "adopt")
         self.heartbeat_interval = 15.0
         # Set when the target is revoked: report on held attempts, claim nothing new.
         self.draining = False
@@ -114,6 +169,8 @@ class Agent:
         the others.
         """
         response = None
+        if not self._adopted:
+            self._adopt()
         if not self.draining:
             try:
                 response = self.client.poll(PollRequest(
@@ -143,6 +200,8 @@ class Agent:
                 held = self.held.get(attempt_id)
                 if held is not None and held.handle is not None:
                     self.adapter.cancel(held.handle)
+            for erasure in response.erasures:
+                self._erase(erasure)
         self._report()
         return response
 
@@ -164,20 +223,66 @@ class Agent:
         if lease.attempt_id in self.held:
             return
         try:
-            handle = self.adapter.submit(lease, self.store_uri)
+            lease = self._trusted(lease)
+        except UntrustedImage as exc:
+            log.error("refusing attempt %s: %s", lease.attempt_id, exc)
+            self._refuse(lease, FailureClass.UNTRUSTED_IMAGE, str(exc))
+            return
+        try:
+            extra = self._runner_env(lease)
+            # Only evaluator tasks get the gateway; other submits keep the plain call.
+            handle = (self.adapter.submit(lease, self.store_uri, env=extra[0], secrets=extra[1])
+                      if extra else self.adapter.submit(lease, self.store_uri))
         except Exception as exc:
+            if self.gateway is not None:
+                self.gateway.unregister(lease.attempt_id)
             # Report it at once so the job is retried now, not after the lease expires.
             log.exception("could not start attempt %s", lease.attempt_id)
-            self.held[lease.attempt_id] = _Held(
-                lease=lease, handle=None, token=lease.attempt_token,
-                state=AttemptState.FINALIZING,
-                final=AttemptResult(
-                    attempt_id=lease.attempt_id, fencing_token=lease.fencing_token,
-                    outcome=AttemptOutcome.FAILED, failure_class=FailureClass.CAPACITY,
-                    diagnostics=filter_diagnostics(
-                        {"message": f"the scheduler could not start it: {exc}"}, self.egress)))
+            self._refuse(lease, FailureClass.CAPACITY, f"the scheduler could not start it: {exc}")
             return
         self.held[lease.attempt_id] = _Held(lease=lease, handle=handle, token=lease.attempt_token)
+
+    def _refuse(self, lease: LeaseGrant, failure: FailureClass, message: str) -> None:
+        """Hold an attempt that never started, so the next report fails it at once."""
+        self.held[lease.attempt_id] = _Held(
+            lease=lease, handle=None, token=lease.attempt_token, state=AttemptState.FINALIZING,
+            final=AttemptResult(
+                attempt_id=lease.attempt_id, fencing_token=lease.fencing_token,
+                outcome=AttemptOutcome.FAILED, failure_class=failure,
+                diagnostics=filter_diagnostics({"message": message}, self.egress)))
+
+    def _trusted(self, lease: LeaseGrant) -> LeaseGrant:
+        """The lease with its image as this site will run it: by digest, from the site's
+        mirror, and signed by a pinned key. Adapters that run no images are unaffected."""
+        if not self.adapter.capabilities().runs_images:
+            return lease
+        if self.images is None:
+            if self.allow_unsigned_images:
+                return lease
+            raise UntrustedImage("this agent pins no image keys, so it runs no images")
+        image = self.images.resolve(lease.spec.runtime.image)
+        runtime = lease.spec.runtime.model_copy(update={"image": image})
+        return lease.model_copy(update={"spec": lease.spec.model_copy(update={"runtime": runtime})})
+
+    def _adopt(self) -> None:
+        """Hold again the attempts an earlier instance of this agent left running. The poll
+        then says which of them to stop; an expired attempt token is still accepted while
+        its attempt holds the job."""
+        try:
+            adopted = self.adapter.adopt()  # type: ignore[attr-defined]
+        except Exception:
+            log.exception("could not list the attempts left running; will try again")
+            return
+        self._adopted = True
+        for lease, handle, secrets in adopted:
+            if lease.attempt_id in self.held:
+                continue
+            token = (secrets or {}).get("HCP_RUNNER_TOKEN")
+            if token:
+                self._gateway().register(lease.attempt_id, token)
+            self.held[lease.attempt_id] = _Held(lease=lease, handle=handle,
+                                                token=lease.attempt_token)
+            log.info("adopted attempt %s", lease.attempt_id)
 
     def _report(self) -> None:
         for attempt_id in list(self.held):
@@ -242,7 +347,8 @@ class Agent:
                 continue
             try:
                 if request.mode == GrantMode.UPLOAD:
-                    grants.append(self.store.grant(obj.key, "PUT", request.expires_in_seconds))
+                    grants.append(self.store.grant(obj.key, "PUT", request.expires_in_seconds,
+                                                   sha256=obj.sha256))
                     continue
                 stat = self.store.stat(obj.key)
                 if stat is None:
@@ -261,10 +367,94 @@ class Agent:
         except (httpx.HTTPError, PlatformError) as exc:
             log.warning("grant answer failed; the request will be redelivered: %s", exc)
 
+    def _erase(self, erasure: Erasure) -> None:
+        """Delete a deleted run's objects, with this site's own storage identity. Only run
+        prefixes are ever erased, never revisions, which other runs may share."""
+        deleted, problems = 0, []
+        for prefix in erasure.prefixes:
+            parts = prefix.split("/")
+            if len(parts) != 5 or parts[0] != "runs" or parts[4] != "" or not all(parts[1:4]):
+                problems.append(f"{prefix} is not a run prefix (runs/<org>/<project>/<run>/)")
+                continue
+            try:
+                deleted += self.store.delete_prefix(prefix)
+            except Exception as exc:  # any backend error is reported, and the pass retried
+                problems.append(f"{prefix}: {type(exc).__name__}: {exc}"[:500])
+        try:
+            self.client.erasure(ErasureReport(
+                deletion_id=erasure.deletion_id, pass_number=erasure.pass_number,
+                ok=not problems, objects_deleted=deleted, problems=problems))
+        except (httpx.HTTPError, PlatformError) as exc:
+            log.warning("erasure report failed; the erasure will be redelivered: %s", exc)
+
     def _forget(self, attempt_id: str) -> None:
         held = self.held.pop(attempt_id, None)
+        if self.gateway is not None:
+            self.gateway.unregister(attempt_id)
         if held is not None and held.handle is not None:
             self.adapter.cleanup(held.handle)
+
+    def close(self) -> None:
+        if self.gateway is not None:
+            self.gateway.close()
+            self.gateway = None
+
+    # -- evaluator tasks: the runner gateway calls these from its own threads -------------
+
+    def _runner_env(self, lease: LeaseGrant) -> tuple[dict[str, str], dict[str, str]] | None:
+        """The gateway address (environment) and token (secret) for an evaluator task."""
+        if lease.spec.resources.job_class != JobClass.EVALUATOR_POOL:
+            return None
+        gateway = self._gateway()
+        return ({"HCP_GATEWAY_URL": self.gateway_url or gateway.url},
+                {"HCP_RUNNER_TOKEN": gateway.register(lease.attempt_id)})
+
+    def _gateway(self) -> RunnerGateway:
+        if self.gateway is None:
+            self.gateway = RunnerGateway(self, host=self.gateway_host, port=self.gateway_port)
+        return self.gateway
+
+    def _held_task(self, attempt_id: str) -> _Held:
+        held = self.held.get(attempt_id)
+        if held is None or held.final is not None:
+            raise PlatformError(ErrorCode.STALE_ATTEMPT,
+                                f"attempt {attempt_id} is not running here")
+        return held
+
+    def lease_evaluations(self, attempt_id: str, body: dict) -> dict:
+        held = self._held_task(attempt_id)
+        req = EvaluationLeaseRequest(attempt_id=attempt_id,
+                                     fencing_token=held.lease.fencing_token,
+                                     wait_seconds=min(float(body.get("wait_seconds", 0)), 20.0))
+        return self.client.lease_evaluations(held.token, req).model_dump(mode="json")
+
+    def complete_evaluations(self, attempt_id: str, body: dict) -> dict:
+        """Check the chunk's records object in this site's storage, filter candidate error
+        text by the egress policy, and report the results."""
+        held = self._held_task(attempt_id)
+        obj = ResultObject.model_validate(body.get("object"))
+        prefix = f"{held.lease.spec.outputs.storage_prefix}{attempt_id}/evaluations/"
+        if not obj.key.startswith(prefix):
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"evaluation records must be stored under {prefix}")
+        if self.store.stat(obj.key) != (obj.size, obj.sha256):
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"{obj.key} is missing or does not match its size or sha256")
+        results = [self._filter_result(EvaluationResult.model_validate(_trimmed(r)))
+                   for r in body.get("results") or []]
+        completion = EvaluationCompletion(
+            attempt_id=attempt_id, fencing_token=held.lease.fencing_token,
+            chunk_id=body.get("chunk_id"), lease_number=body.get("lease_number"),
+            results=results, object=obj)
+        return self.client.complete_evaluations(held.token, completion).model_dump(mode="json")
+
+    def _filter_result(self, result: EvaluationResult) -> EvaluationResult:
+        if result.error is None or self.egress == EgressPolicy.FULL:
+            return result
+        if self.egress == EgressPolicy.METRICS_ONLY:
+            return result.model_copy(update={
+                "error": "evaluation failed (details withheld by this site's egress policy)"})
+        return result.model_copy(update={"error": result.error[:SUMMARY_LIMIT]})
 
     # -- results ----------------------------------------------------------------------
 
@@ -280,6 +470,12 @@ class Agent:
             # Stopped by a signal this agent did not send: an interruption, not a cancel.
             return AttemptResult(**base, outcome=AttemptOutcome.FAILED, exit_code=obs.exit_code,
                                  failure_class=FailureClass.INTERRUPTED)
+        if obs.failure_class is not None:
+            message = held.failure_message or (obs.stderr_tail or "").strip()[-500:] or None
+            return AttemptResult(**base, outcome=AttemptOutcome.FAILED, exit_code=obs.exit_code,
+                                 failure_class=obs.failure_class, diagnostics=filter_diagnostics(
+                                     {"exit_code": obs.exit_code, "message": message},
+                                     self.egress))
         if obs.exit_code == 0:
             manifest, digest, problems = self._verify_outputs(held)
             if not problems:

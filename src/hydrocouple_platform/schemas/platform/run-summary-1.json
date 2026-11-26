@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "SummaryColumn": {
+      "additionalProperties": false,
+      "description": "What one column of a summary table reports.",
+      "properties": {
+        "catalog_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Engine catalog path of the quantity, where it has one.",
+          "title": "Catalog Path"
+        },
+        "unit": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Unit as the engine labels it for this model; absent when it declares none.",
+          "title": "Unit"
+        }
+      },
+      "title": "SummaryColumn",
+      "type": "object"
+    },
+    "SummaryTable": {
+      "additionalProperties": false,
+      "properties": {
+        "columns": {
+          "additionalProperties": {
+            "$ref": "#/$defs/SummaryColumn"
+          },
+          "title": "Columns",
+          "type": "object"
+        },
+        "rows": {
+          "items": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "type": "object"
+          },
+          "title": "Rows",
+          "type": "array"
+        }
+      },
+      "required": [
+        "rows"
+      ],
+      "title": "SummaryTable",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/run-summary-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "The engine's end-of-run report as data: the tables of the text report.\n\nIt names model elements, so it is an artifact in the target's storage and is\nsubject to the target's egress policy; it is never sent in events.",
+  "properties": {
+    "engine": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Engine"
+    },
+    "flow_units": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Flow Units"
+    },
+    "schema": {
+      "const": "hydrocouple.platform/run-summary/1",
+      "default": "hydrocouple.platform/run-summary/1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "tables": {
+      "additionalProperties": {
+        "$ref": "#/$defs/SummaryTable"
+      },
+      "title": "Tables",
+      "type": "object"
+    },
+    "unit_system": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Unit System"
+    }
+  },
+  "required": [
+    "tables"
+  ],
+  "title": "RunSummary",
+  "type": "object"
+}

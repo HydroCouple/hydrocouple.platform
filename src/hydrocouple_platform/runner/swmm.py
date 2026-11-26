@@ -1,7 +1,9 @@
-"""``swmm.simulation@1``: run one SWMM model to completion with the OpenSWMM engine.
+"""``swmm.simulation@1`` and ``@2``: run one SWMM model to completion with the OpenSWMM engine.
 
 The tight step loop stays inside this process. Progress is reported on wall
 time intervals as simulated time completed; no percentage or ETA is invented.
+Version 2 writes the request's overrides after the model opens and before it
+initializes; the attempt's quality lists each with the value it replaced.
 """
 
 from __future__ import annotations
@@ -9,10 +11,11 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from ..contracts.manifests import ArtifactKind, check_safe_path
+from ..contracts.manifests import ArtifactKind, canonical_json, check_safe_path
 from ..workflows import OPENSWMM_ENGINE_COMPONENT
 from . import EXIT_ENGINE, EXIT_INVALID_INPUT, EXIT_MISSING_DEPENDENCY, RunnerFailure
 from .core import Context, HandlerResult
+from .summary import engine_summary
 
 
 def _component(composition: dict) -> dict:
@@ -37,6 +40,51 @@ def _component(composition: dict) -> dict:
     return comp
 
 
+_SCALAR = {"float", "int", "bool"}
+
+
+def apply_overrides(solver, overrides: list[dict]) -> list[dict]:
+    """Write each ``{path, id, value}`` to the opened model; return them with their base values
+    and their unit labels in the model's unit system.
+
+    A path must be a writable ``float``, ``int`` or ``bool`` field of an element kind in the
+    engine catalog. Anything else, an unknown element or a value of the wrong type is invalid
+    input, and nothing after it is written.
+    """
+    from openswmm.engine import catalog
+
+    applied = []
+    for number, item in enumerate(overrides, start=1):
+        path, element, value = item["path"], item["id"], item["value"]
+        where = f"override {number} ({path} on {element})"
+        try:
+            entry = catalog.lookup(path)
+        except KeyError:
+            raise RunnerFailure(EXIT_INVALID_INPUT, f"{where}: not an engine field") from None
+        kind = path.split(".", 1)[0]
+        if (entry["form"] != "property" or entry.get("access") != "rw"
+                or entry.get("type") not in _SCALAR
+                or "collection" not in catalog.targets().get(kind, {})):
+            raise RunnerFailure(EXIT_INVALID_INPUT,
+                                f"{where}: only writable float, int or bool element fields "
+                                "can be overridden")
+        kind_ok = {"bool": isinstance(value, bool),
+                   "int": isinstance(value, int) and not isinstance(value, bool),
+                   "float": isinstance(value, (int, float)) and not isinstance(value, bool)}
+        if not kind_ok[entry["type"]]:
+            raise RunnerFailure(EXIT_INVALID_INPUT, f"{where}: needs a {entry['type']} value")
+        try:
+            owner = catalog.resolve(solver, entry["target"], element)
+            base = getattr(owner, entry["name"])
+            setattr(owner, entry["name"], float(value) if entry["type"] == "float" else value)
+        except Exception as exc:
+            raise RunnerFailure(EXIT_INVALID_INPUT, f"{where}: {exc}") from None
+        unit = catalog.unit_label(entry.get("units"), solver.unit_system, solver.flow_units)
+        applied.append({"path": path, "id": element, "value": value, "base_value": base,
+                        "unit": unit})
+    return applied
+
+
 def run(ctx: Context, composition: dict) -> HandlerResult:
     comp = _component(composition)
     model = ctx.inputs / comp["arguments"]["configuration"]["model"]
@@ -53,6 +101,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
     active = (EngineState.STARTED, EngineState.RUNNING)
     solver = Solver(str(model), str(rpt), str(out))
     errors: list[str] = []
+    summary = None
     try:
         try:
             solver.open()
@@ -64,6 +113,7 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
         warnings = list(getattr(solver, "open_warnings", []) or [])[:50]
         for message in warnings:
             ctx.events.emit("warning", "open", message)
+        overrides = apply_overrides(solver, ctx.spec.workload.parameters.get("overrides") or [])
         threads = solver.effective_threads(ctx.spec.runtime.threads)._asdict()
         solver.initialize()
         solver.start()
@@ -97,7 +147,13 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
             "warnings": len(warnings),
             "threads": threads,
         }
+        if overrides:
+            quality["overrides"] = overrides
         solver.end()
+        try:
+            summary = engine_summary(solver, getattr(openswmm, "__version__", None))
+        except Exception as exc:  # the run itself is good; say why it has no summary
+            ctx.events.emit("warning", "summary", f"no run summary: {exc}")
         solver.report()
     except RunnerFailure:
         raise
@@ -113,6 +169,10 @@ def run(ctx: Context, composition: dict) -> HandlerResult:
 
     artifacts = [("model.rpt", ArtifactKind.REPORT, "swmm_rpt"),
                  ("model.out", ArtifactKind.BINARY_OUTPUT, "swmm_out")]
+    if summary is not None:
+        (ctx.outputs / "summary.json").write_bytes(
+            canonical_json(summary.model_dump(mode="json", by_alias=True)))
+        artifacts.append(("summary.json", ArtifactKind.SUMMARY, "json"))
     # Files the model saved next to itself (e.g. [FILES] SAVE HOTSTART) are outputs too.
     for path in sorted(p for p in model.parent.rglob("*") if p.is_file() and p not in before):
         rel = "saved/" + path.relative_to(model.parent).as_posix()

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,9 @@ from ..contracts.capabilities import AdapterCapabilities, check_spec
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import (
     Actor,
+    ArtifactInput,
     Inputs,
+    JobClass,
     JobSpec,
     Limits,
     Outputs,
@@ -39,19 +41,21 @@ from ..db.models import (
     Project,
     Revision,
     Run,
+    Study,
     new_id,
 )
 from ..workflows import Workflow, get_workflow
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
+from .estimates import cost_band
 
 PROFILES: dict[str, dict[str, float]] = {
     "cpu-small": {"cpu": 1, "memory_gib": 2, "scratch_gib": 4},
     "cpu-standard": {"cpu": 4, "memory_gib": 8, "scratch_gib": 20},
     "memory-large": {"cpu": 8, "memory_gib": 64, "scratch_gib": 50},
 }
-ACTIVE_STATES = [s.value for s in JobState if s not in JOB_TERMINAL]
 DEFAULT_RETRY_BUDGET = 2
+RESUME_STATE = "state.h5"  # the saved state a resumable workflow publishes
 
 
 def run_prefix(organization_id: str, project_id: str, run_id: str) -> str:
@@ -68,6 +72,7 @@ class _Checked:
     resources: Resources
     findings: list[str]
     request_hash: str
+    resume: ArtifactInput | None = None
 
 
 class RunServices(ServiceBase):
@@ -85,8 +90,14 @@ class RunServices(ServiceBase):
                 raise PlatformError(ErrorCode.NOT_FOUND, f"session {req.session_id} was not found")
         workflow = get_workflow(req.workflow, req.workflow_version)
         parameters = workflow.validate_parameters(req.parameters)
+        if parameters.get("setpoints"):
+            self.check_setpoints(s, project.id, parameters["setpoints"])  # type: ignore[attr-defined]
 
         findings: list[str] = []
+        resume = None
+        if req.resume_from is not None:
+            resume = self._resume_input(s, principal, req.resume_from, project, target, workflow,
+                                        findings)
         if revision.state != "READY":
             findings.append(f"revision {revision.id} is {revision.state}, not READY")
         if revision.target_id != target.id:
@@ -112,11 +123,11 @@ class RunServices(ServiceBase):
             cap = AdapterCapabilities.model_validate(target.capabilities)
             probe = self._spec(
                 "job_probe", "run_probe", project, revision, target, workflow, parameters,
-                resources, req, Actor(human_subject=principal.subject),
+                resources, req, Actor(human_subject=principal.subject), resume,
             )
             findings.extend(check_spec(cap, probe))
 
-        request_hash = sha256_of({
+        hashed = {
             "project_id": project.id, "session_id": req.session_id, "revision_id": revision.id,
             "manifest_sha256": revision.manifest_sha256, "workflow": workflow.name,
             "workflow_version": workflow.version, "parameters": parameters,
@@ -124,25 +135,70 @@ class RunServices(ServiceBase):
             "retry_budget": DEFAULT_RETRY_BUDGET if req.retry_budget is None else req.retry_budget,
             "estimated_runtime_seconds": req.estimated_runtime_seconds,
             "agent_session_id": principal.agent_session_id,
-        })
+        }
+        if req.resume_from is not None:  # absent otherwise, so earlier requests keep their hash
+            hashed["resume_from"] = req.resume_from
         return _Checked(project, revision, target, workflow, parameters, resources, findings,
-                        request_hash)
+                        sha256_of(hashed), resume)
+
+    def _resume_input(self, s: Session, principal: Principal, run_id: str, project: Project,
+                      target: ComputeTarget, workflow: Workflow,
+                      findings: list[str]) -> ArtifactInput | None:
+        """The saved state of run ``run_id`` as an input, or None with the reason in findings."""
+        if not workflow.resumable:
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                f"{workflow.name}@{workflow.version} does not continue from "
+                                "an earlier run's state")
+        earlier = self.owned(s, Run, run_id, principal, "viewer")
+        if earlier.project_id != project.id:
+            raise PlatformError(ErrorCode.NOT_FOUND, f"run {run_id} was not found")
+        self._not_deleted(earlier)
+        if earlier.workflow != workflow.name:
+            findings.append(f"run {run_id} ran {earlier.workflow}, not {workflow.name}; only "
+                            "a run of the same workflow saved a state this one can continue")
+            return None
+        if earlier.target_id != target.id:
+            findings.append(f"run {run_id} ran on another target; data is never moved "
+                            "between targets implicitly")
+            return None
+        if earlier.canonical_attempt_id is None:
+            findings.append(f"run {run_id} has no published result yet")
+            return None
+        state = s.scalar(select(Artifact).where(
+            Artifact.attempt_id == earlier.canonical_attempt_id, Artifact.path == RESUME_STATE))
+        if state is None or state.kind != "state":
+            findings.append(f"run {run_id} published no saved state ({RESUME_STATE})")
+            return None
+        return ArtifactInput(role="resume", path=f"resume/{RESUME_STATE}",
+                             key=state.storage_key, sha256=state.sha256, size=state.size,
+                             run_id=earlier.id, attempt_id=state.attempt_id,
+                             source_path=state.path)
+
+    @staticmethod
+    def _run_findings(checked: _Checked) -> list[str]:
+        if checked.workflow.job_class == JobClass.EVALUATOR_POOL:
+            return [f"{checked.workflow.name}@{checked.workflow.version} evaluates study "
+                    "candidates; create a study to use it"]
+        return []
 
     def _spec(self, job_id, run_id, project, revision, target, workflow, parameters, resources,
-              req: RunRequest, actor: Actor) -> JobSpec:
+              req: RunRequest, actor: Actor, resume: ArtifactInput | None = None) -> JobSpec:
         threads = int(parameters.get("threads", 1))
         return JobSpec(
             job_id=job_id, run_id=run_id, organization_id=project.organization_id,
             project_id=project.id, actor=actor,
             workload=Workload(workflow=workflow.name, workflow_version=workflow.version,
                               parameters=parameters),
-            runtime=Runtime(image=workflow.images.get("default"), threads=threads),
+            runtime=Runtime(image=self.settings.workflow_images.get(
+                f"{workflow.name}@{workflow.version}", workflow.images.get("default")),
+                threads=threads, host=workflow.host),
             inputs=Inputs(
                 revision_id=revision.id, manifest_sha256=revision.manifest_sha256,
                 storage_prefix=revision.storage_prefix,
                 composition=revision.manifest.get("composition", "composition.json"),
                 files=[{"path": f["path"], "sha256": f["sha256"], "size": f["size"]}
                        for f in revision.manifest["files"]],
+                artifacts=[resume] if resume is not None else [],
             ),
             resources=resources,
             placement=Placement(target_id=target.id),
@@ -157,28 +213,36 @@ class RunServices(ServiceBase):
             ),
         )
 
-    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked) -> list[str]:
+    def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked,
+                        slots: int = 1, spend: tuple[float | None, str | None] = (None, None),
+                        what: str = "run") -> list[str]:
+        """Why a submission needing ``slots`` concurrent attempts, estimated at ``spend``
+        (amount and currency), is outside the budget."""
         budget = Budget.model_validate(session.budget)
+        used = self._session_use(s, session)  # type: ignore[attr-defined]
         reasons: list[str] = []
         if budget.max_runs is not None and session.runs_submitted >= budget.max_runs:
             reasons.append(f"the agent session has used its {budget.max_runs} runs")
         if budget.max_concurrent_attempts is not None:
-            active = s.scalar(
-                select(func.count()).select_from(Job).join(Run, Run.id == Job.run_id)
-                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES))
-            ) or 0
-            if active >= budget.max_concurrent_attempts:
-                reasons.append(f"{active} jobs are already active; the session allows "
-                               f"{budget.max_concurrent_attempts}")
+            # Active run jobs, plus every live study's whole pool, which can start at any time.
+            if used["concurrent_attempts"] + slots > budget.max_concurrent_attempts:
+                reasons.append(
+                    f"{used['concurrent_attempts']} attempts are active or reserved by pools; "
+                    f"with {slots} more the session would exceed its "
+                    f"{budget.max_concurrent_attempts} concurrent attempts")
         if budget.allowed_targets is not None and checked.target.id not in budget.allowed_targets:
             reasons.append(f"target {checked.target.id} is outside the session's allowed targets")
         if (budget.allowed_job_classes is not None
                 and checked.resources.job_class not in budget.allowed_job_classes):
             reasons.append(f"job class {checked.resources.job_class.value} is not allowed")
-        if budget.max_estimated_spend is not None:
-            reasons.append("the session caps spend but this target has no price source, so the "
-                           "cost of this run is unknown")
+        spend_reason = self._spend_reason(budget, used, *spend, what)  # type: ignore[attr-defined]
+        if spend_reason:
+            reasons.append(spend_reason)
         return reasons
+
+    def _run_spend(self, checked: _Checked, req: RunRequest) -> tuple[float | None, str | None]:
+        hours = req.estimated_runtime_seconds / 3600 if req.estimated_runtime_seconds else None
+        return self._spend(checked.target, checked.resources.profile, hours)  # type: ignore
 
     def _agent_session(self, s: Session, principal: Principal, agent_session_id: str,
                        project: Project, lock: bool) -> AgentSession:
@@ -193,16 +257,26 @@ class RunServices(ServiceBase):
     # -- estimate ------------------------------------------------------------------
 
     def estimate(self, principal: Principal, req: RunRequest) -> Estimate:
+        """Validate a would-be run and price it; a valid estimate is kept for the submission."""
         with self.tx() as s:
             checked = self._check(s, principal, req, "viewer")
+            checked.findings.extend(self._run_findings(checked))
+            spend = self._run_spend(checked, req)
             reasons: list[str] = []
             if principal.agent_session_id:
                 reasons = self._budget_reasons(s, self._agent_session(
-                    s, principal, principal.agent_session_id, checked.project, False), checked)
+                    s, principal, principal.agent_session_id, checked.project, False), checked,
+                    spend=spend)
+            row = None if checked.findings else self._record_estimate(  # type: ignore
+                s, principal, checked.project, "run", checked.request_hash, 1, spend[0],
+                bool(reasons))
             return Estimate(
                 ok=not checked.findings, findings=checked.findings,
                 job_class=checked.resources.job_class, profile=checked.resources.profile,
-                requires_approval=bool(reasons), approval_reasons=reasons,
+                estimated_spend=spend[0], currency=spend[1],
+                cost_band=cost_band(*spend), requires_approval=bool(reasons),
+                approval_reasons=reasons, estimate_id=row.id if row else None,
+                expires_at=row.expires_at if row else None,
             )
 
     # -- submit ----------------------------------------------------------------------
@@ -248,6 +322,7 @@ class RunServices(ServiceBase):
             existing = self._existing(s, org_id, key, checked.request_hash)
             if existing is not None:
                 return existing
+            checked.findings.extend(self._run_findings(checked))
             if checked.findings:
                 raise PlatformError(
                     ErrorCode.CAPABILITY_UNSUPPORTED if checked.target.capabilities
@@ -257,23 +332,22 @@ class RunServices(ServiceBase):
                     next_action="Call platform_estimate to see every finding before submitting.",
                 )
 
+            self._require_estimate(  # type: ignore[attr-defined]
+                s, principal, org_id, "run", checked.request_hash, 1, req.estimate_id)
+            spend = self._run_spend(checked, req)
             session = None
             reasons: list[str] = []
-            actor = Actor(human_subject=principal.subject, tool_call_id=req.tool_call_id)
             if principal.agent_session_id:
                 session = self._agent_session(s, principal, principal.agent_session_id,
                                               checked.project, lock=True)
-                reasons = self._budget_reasons(s, session, checked)
-                actor = Actor(
-                    human_subject=principal.subject, agent_session_id=session.id,
-                    agent_client=session.client_name, agent_client_version=session.client_version,
-                    model=session.model, conversation_ref=session.conversation_ref,
-                    tool_call_id=req.tool_call_id,
-                )
+                self._check_wall_time(session)  # type: ignore[attr-defined]
+                reasons = self._budget_reasons(s, session, checked, spend=spend)
+            actor = self.actor_of(s, principal, req.tool_call_id, session)
 
             run_id, job_id = new_id("run"), new_id("job")
             spec = self._spec(job_id, run_id, checked.project, checked.revision, checked.target,
-                              checked.workflow, checked.parameters, checked.resources, req, actor)
+                              checked.workflow, checked.parameters, checked.resources, req, actor,
+                              checked.resume)
             run = Run(
                 id=run_id, organization_id=org_id, project_id=checked.project.id,
                 session_id=req.session_id, revision_id=checked.revision.id,
@@ -297,6 +371,7 @@ class RunServices(ServiceBase):
                     id=new_id("apr"), organization_id=org_id, project_id=checked.project.id,
                     run_id=run_id, job_id=job_id,
                     agent_session_id=session.id if session else None, reasons=reasons,
+                    actor=actor.model_dump(mode="json"),
                     expires_at=self.now() + timedelta(seconds=self.settings.approval_ttl_seconds),
                 )
                 s.add(approval)
@@ -304,6 +379,7 @@ class RunServices(ServiceBase):
                 s.add(Outbox(topic="job.accepted", payload={"job_id": job_id}))
             if session is not None:
                 session.runs_submitted += 1
+                session.estimated_spend += spend[0] or 0.0
             self.audit(s, org_id, actor.model_dump(mode="json"), "run.submit", "run", run_id,
                        {"job_id": job_id, "state": state.value, "approval_reasons": reasons})
             s.flush()
@@ -340,10 +416,19 @@ class RunServices(ServiceBase):
             if approval.expires_at <= self.now():
                 raise PlatformError(ErrorCode.INVALID_TRANSITION,
                                     f"approval {approval.id} expired")
-            job = s.get(Job, approval.job_id, with_for_update=True)
             approval.state = "APPROVED" if approve else "REJECTED"
             approval.resolved_by, approval.resolved_at, approval.note = (
                 principal.user_id, self.now(), note)
+            if approval.study_id is not None:
+                study_state = self.resolve_study_approval(  # type: ignore[attr-defined]
+                    s, approval, approve, note)
+                self.audit(s, approval.organization_id, self.audit_actor(s, principal),
+                           "approval." + approval.state.lower(), "approval", approval.id,
+                           {"study_id": approval.study_id, "note": note,
+                            "requested_by": approval.actor})
+                return {"approval_id": approval.id, "state": approval.state,
+                        "study_state": study_state}
+            job = s.get(Job, approval.job_id, with_for_update=True)
             if job.state == JobState.PENDING_APPROVAL.value:
                 if approve:
                     self._set_state(job, JobState.ACCEPTED)
@@ -351,9 +436,9 @@ class RunServices(ServiceBase):
                 else:
                     self._set_state(job, JobState.REJECTED, failure={"reason": "approval rejected",
                                                                        "note": note})
-            self.audit(s, approval.organization_id, human_actor(principal),
+            self.audit(s, approval.organization_id, self.audit_actor(s, principal),
                        "approval." + approval.state.lower(), "approval", approval.id,
-                       {"job_id": job.id, "note": note})
+                       {"job_id": job.id, "note": note, "requested_by": approval.actor})
             return {"approval_id": approval.id, "state": approval.state, "job_state": job.state}
 
     def list_approvals(self, principal: Principal, project_id: str) -> list[dict]:
@@ -362,7 +447,8 @@ class RunServices(ServiceBase):
             rows = s.scalars(select(Approval).where(
                 Approval.project_id == project_id, Approval.state == "PENDING"))
             return [{"approval_id": a.id, "run_id": a.run_id, "job_id": a.job_id,
-                     "reasons": a.reasons, "expires_at": a.expires_at.isoformat()} for a in rows]
+                     "study_id": a.study_id, "reasons": a.reasons,
+                     "expires_at": a.expires_at.isoformat()} for a in rows]
 
     # -- cancellation -----------------------------------------------------------------
 
@@ -377,8 +463,8 @@ class RunServices(ServiceBase):
                 job.updated_at = self.now()
             else:
                 self._set_state(job, JobState.CANCELLED, failure={"reason": "cancelled by user"})
-            self.audit(s, job.organization_id, human_actor(principal), "job.cancel", "job", job.id,
-                       {"state_at_request": state.value})
+            self.audit(s, job.organization_id, self.audit_actor(s, principal), "job.cancel",
+                       "job", job.id, {"state_at_request": state.value})
             return {"job_id": job.id, "state": job.state,
                     "cancel_requested": job.cancel_requested}
 
@@ -419,9 +505,22 @@ class RunServices(ServiceBase):
                               "created_at": j.created_at.isoformat()} for j in page],
                     "next_before": page[-1].id if len(rows) > limit else None}
 
+    @staticmethod
+    def _not_deleted(run: Run) -> None:
+        if run.deleting_at is not None:
+            done = "was deleted" if run.deleted_at is not None else "is being deleted"
+            raise PlatformError(ErrorCode.NOT_FOUND, f"run {run.id} {done}",
+                                next_action="Query its deletion for the erasure's progress")
+
     def get_results(self, principal: Principal, run_id: str) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)
+            study = s.scalar(select(Study.id).where(Study.run_id == run.id))
+            if study is not None:
+                raise PlatformError(ErrorCode.NOT_READY,
+                                    f"run {run.id} is the evaluator pool of study {study}",
+                                    next_action=f"Read the results of study {study}")
             if run.canonical_attempt_id is None:
                 job = s.scalar(select(Job).where(Job.run_id == run.id))
                 raise PlatformError(ErrorCode.NOT_READY,
@@ -444,9 +543,24 @@ class RunServices(ServiceBase):
                 "published_at": run.published_at.isoformat() if run.published_at else None,
             }
 
+    def get_attempt_manifest(self, principal: Principal, run_id: str) -> dict:
+        """The published attempt's manifest as the runner wrote it, with its checksum, so a
+        reader outside the control plane (the knowledge graph) can rebuild attempt.json."""
+        with self.tx() as s:
+            run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)
+            if run.canonical_attempt_id is None:
+                raise PlatformError(ErrorCode.NOT_READY, f"run {run.id} is not published",
+                                    retryable=True)
+            attempt = s.get(Attempt, run.canonical_attempt_id)
+            return {"run_id": run.id, "attempt_id": attempt.id,
+                    "attempt_manifest_sha256": attempt.manifest_sha256,
+                    "attempt_manifest": attempt.manifest}
+
     def request_downloads(self, principal: Principal, run_id: str, paths: list[str]) -> dict:
         with self.tx() as s:
             run = self.owned(s, Run, run_id, principal, "viewer")
+            self._not_deleted(run)  # no new grants once deletion is requested
             if run.canonical_attempt_id is None:
                 raise PlatformError(ErrorCode.NOT_READY, f"run {run.id} is not published")
             arts = {a.path: a for a in s.scalars(select(Artifact).where(

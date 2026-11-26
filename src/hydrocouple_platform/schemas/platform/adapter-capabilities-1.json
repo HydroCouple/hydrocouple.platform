@@ -9,6 +9,27 @@
       ],
       "title": "JobClass",
       "type": "string"
+    },
+    "TaskSize": {
+      "additionalProperties": false,
+      "properties": {
+        "cpu": {
+          "exclusiveMinimum": 0,
+          "title": "Cpu",
+          "type": "number"
+        },
+        "memory_gib": {
+          "exclusiveMinimum": 0,
+          "title": "Memory Gib",
+          "type": "number"
+        }
+      },
+      "required": [
+        "cpu",
+        "memory_gib"
+      ],
+      "title": "TaskSize",
+      "type": "object"
     }
   },
   "$id": "https://hydrocouple.org/schema/platform/adapter-capabilities-1.json",
@@ -18,6 +39,14 @@
     "adapter": {
       "title": "Adapter",
       "type": "string"
+    },
+    "composition_hosts": {
+      "description": "Composition hosts the target runs (hydrocouple.composer: HydroCoupleComposer headless with the OpenSWMM engine component)",
+      "items": {
+        "type": "string"
+      },
+      "title": "Composition Hosts",
+      "type": "array"
     },
     "family": {
       "enum": [
@@ -179,6 +208,7 @@
         }
       ],
       "default": null,
+      "description": "True when writes to scratch use the task's memory.",
       "title": "Scratch In Memory"
     },
     "status_integration": {
@@ -210,6 +240,23 @@
       ],
       "default": null,
       "title": "Submission Rate Per Second"
+    },
+    "task_sizes": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TaskSize"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The CPU and memory pairs the service offers, when it offers only some (Fargate). A request runs on the smallest pair with enough of both. None when any combination up to max_cpu and max_memory_gib runs.",
+      "title": "Task Sizes"
     }
   },
   "required": [

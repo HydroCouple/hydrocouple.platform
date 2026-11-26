@@ -3,6 +3,19 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "additionalProperties": false,
   "properties": {
+    "estimate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The estimate this submission follows; required above the organization's require_estimate_above_evaluations",
+      "title": "Estimate Id"
+    },
     "estimated_runtime_seconds": {
       "anyOf": [
         {
@@ -36,6 +49,19 @@
     "project_id": {
       "title": "Project Id",
       "type": "string"
+    },
+    "resume_from": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "A published run of the same resumable workflow, project and target whose saved state this run continues from",
+      "title": "Resume From"
     },
     "retry_budget": {
       "anyOf": [

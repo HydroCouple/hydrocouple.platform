@@ -1,0 +1,68 @@
+# Runner egress is limited to DNS, the agent's gateway and the store (plan §11), by these
+# policies, not by advice. Runners accept no connections.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hcp-runner
+spec:
+  podSelector:
+    matchLabels:
+      hydrocouple.org/role: runner
+  policyTypes: ["Ingress", "Egress"]
+  egress:
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: hcp-agent
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# The store's endpoint. NetworkPolicy cannot name hosts, so each overlay replaces this
+# placeholder (which reaches nothing) with the CIDRs of the store's private endpoint.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hcp-runner-storage
+spec:
+  podSelector:
+    matchLabels:
+      hydrocouple.org/role: runner
+  policyTypes: ["Egress"]
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 255.255.255.255/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# Only runner pods may reach the agent's gateway. The agent's own egress (the control
+# plane, the Kubernetes API, the store and the registry) is left to the site.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: hcp-agent
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: hcp-agent
+  policyTypes: ["Ingress"]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              hydrocouple.org/role: runner
+      ports:
+        - protocol: TCP
+          port: 8081

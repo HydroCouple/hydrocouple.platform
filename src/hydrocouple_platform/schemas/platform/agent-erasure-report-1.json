@@ -1,0 +1,40 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/agent-erasure-report-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "deletion_id": {
+      "title": "Deletion Id",
+      "type": "string"
+    },
+    "objects_deleted": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Objects Deleted",
+      "type": "integer"
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "boolean"
+    },
+    "pass_number": {
+      "minimum": 1,
+      "title": "Pass Number",
+      "type": "integer"
+    },
+    "problems": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Problems",
+      "type": "array"
+    }
+  },
+  "required": [
+    "deletion_id",
+    "pass_number",
+    "ok"
+  ],
+  "title": "ErasureReport",
+  "type": "object"
+}

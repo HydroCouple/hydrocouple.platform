@@ -1,0 +1,12 @@
+# The runner gateway: evaluator pods reach their agent here, and only here.
+apiVersion: v1
+kind: Service
+metadata:
+  name: hcp-agent-gateway
+spec:
+  selector:
+    app.kubernetes.io/name: hcp-agent
+  ports:
+    - name: gateway
+      port: 8081
+      targetPort: gateway

@@ -1,0 +1,29 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/proposal-decision-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approve": {
+      "title": "Approve",
+      "type": "boolean"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 2000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    }
+  },
+  "required": [
+    "approve"
+  ],
+  "title": "ProposalDecision",
+  "type": "object"
+}

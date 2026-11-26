@@ -1,0 +1,227 @@
+{
+  "$defs": {
+    "FailurePolicy": {
+      "description": "What a failed candidate does, as in ``openswmm_gymnasium.optimize``.\n\n``fail`` ends the study; ``penalty`` records the candidate with every\nobjective set to the study's ``failure_penalty`` and continues.",
+      "enum": [
+        "fail",
+        "penalty"
+      ],
+      "title": "FailurePolicy",
+      "type": "string"
+    },
+    "Objective": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "minimize",
+            "maximize"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "direction"
+      ],
+      "title": "Objective",
+      "type": "object"
+    },
+    "StudyState": {
+      "enum": [
+        "PENDING_APPROVAL",
+        "OPEN",
+        "CLOSED",
+        "COMPLETED",
+        "CANCELLED",
+        "FAILED",
+        "REJECTED"
+      ],
+      "title": "StudyState",
+      "type": "string"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/study-view-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "approval_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approval Id"
+    },
+    "batches": {
+      "title": "Batches",
+      "type": "integer"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "dimensions": {
+      "title": "Dimensions",
+      "type": "integer"
+    },
+    "evaluations_completed": {
+      "title": "Evaluations Completed",
+      "type": "integer"
+    },
+    "evaluations_failed": {
+      "title": "Evaluations Failed",
+      "type": "integer"
+    },
+    "evaluations_submitted": {
+      "title": "Evaluations Submitted",
+      "type": "integer"
+    },
+    "failure": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Failure"
+    },
+    "max_evaluations": {
+      "title": "Max Evaluations",
+      "type": "integer"
+    },
+    "next_action": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Next Action"
+    },
+    "objectives": {
+      "items": {
+        "$ref": "#/$defs/Objective"
+      },
+      "title": "Objectives",
+      "type": "array"
+    },
+    "on_failure": {
+      "$ref": "#/$defs/FailurePolicy"
+    },
+    "pool": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Pool",
+      "type": "array"
+    },
+    "pool_size": {
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "seed": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Seed"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Session Id"
+    },
+    "state": {
+      "$ref": "#/$defs/StudyState"
+    },
+    "study_id": {
+      "title": "Study Id",
+      "type": "string"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "updated_at": {
+      "format": "date-time",
+      "title": "Updated At",
+      "type": "string"
+    },
+    "workflow": {
+      "title": "Workflow",
+      "type": "string"
+    },
+    "workflow_version": {
+      "title": "Workflow Version",
+      "type": "string"
+    }
+  },
+  "required": [
+    "study_id",
+    "run_id",
+    "project_id",
+    "session_id",
+    "revision_id",
+    "target_id",
+    "state",
+    "workflow",
+    "workflow_version",
+    "objectives",
+    "dimensions",
+    "seed",
+    "on_failure",
+    "max_evaluations",
+    "evaluations_submitted",
+    "evaluations_completed",
+    "evaluations_failed",
+    "batches",
+    "pool_size",
+    "created_at",
+    "updated_at"
+  ],
+  "title": "StudyView",
+  "type": "object"
+}

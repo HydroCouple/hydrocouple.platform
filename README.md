@@ -6,7 +6,11 @@ Durable, bring-your-own-compute execution of SWMM simulations and HydroCouple co
 - **The execution agent** (`agent` extra) runs in the customer's account or site. It opens every connection itself, claims fenced leases, runs work on its own scheduler, mints storage grants with the site's own identity, and filters what leaves the site.
 - **Runners** (`runner` extra) execute approved, versioned workflows next to the engine. They verify every input, then write a HydroCouple run manifest and a platform attempt manifest with provenance.
 
-The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decisions.md). The full plan lives in `openswmm.gui/workplans/SWMM_CLOUD_EXECUTION_PLATFORM_PLAN_2026-10-15.md`.
+The design, and the decisions behind it, are in [`docs/decisions.rst`](docs/decisions.rst). The full plan lives in `openswmm.gui/workplans/SWMM_CLOUD_EXECUTION_PLATFORM_PLAN_2026-10-15.md`.
+
+[Execution platform guide](docs/index.rst) · [First local run](docs/first-run.rst) · [Lifecycle and recovery](docs/execution.rst)
+
+Build the guide with `python -m pip install -e ".[docs]"` and `python -m sphinx -W -b html docs build/docs`.
 
 ## Status
 
@@ -15,7 +19,9 @@ The design, and the decisions behind it, are in [`docs/decisions.md`](docs/decis
 | M1 Contracts | Job spec, capabilities, agent protocol, events, revision and attempt manifests, provenance, errors; JSON Schemas in `src/hydrocouple_platform/schemas/platform/` |
 | M2 Durable core | PostgreSQL schema and migration, shared services, HTTP API, client SDK, outbox, dispatcher, reconciler, agent with the local-pool adapter, agent sessions with budgets and approvals |
 | M3 Packaging and runners | `.inp` dependency packaging as a one-component composition, the `swmm.simulation@1` runner on the real engine, run and attempt manifests |
-| Next | MCP platform toolset (after the current `openswmm.mcp` work lands), studies and evaluator pools (M3b), Kubernetes adapter (M4) |
+| M3b Studies and evaluator pools | Ask/tell studies with fenced chunk leases, evaluator pool tasks (`gym.evaluate@1`) leasing through the agent's runner gateway, failed-candidate policies, lineage and the Pareto set; `hydrocouple_platform.gym.run_platform_study` drives `openswmm_gymnasium` optimizers on the platform |
+| M4 Kubernetes and the first BYOC slice | The Kubernetes adapter, signed runner and agent images, the S3, Blob Storage and Cloud Storage backends, the Kustomize install with OpenTofu modules for AWS, Azure and Google Cloud, and run and study deletion. The gate passes on k3s; its runs on EKS, AKS and GKE (`deploy/gate`) are pending |
+| Next | MCP platform toolset (after the current `openswmm.mcp` work lands) |
 
 ## Layout
 
@@ -29,9 +35,13 @@ src/hydrocouple_platform/
   runner/      approved workflow handlers (swmm.simulation)
   packaging/   builds immutable revisions from local model files
   client.py    PlatformClient for the GUI, CLI and MCP adapters
-  storage.py   object storage interface and the file:// store
+  gym.py       run_platform_study: openswmm_gymnasium optimizers driving a study
+  storage/     object storage: file://, s3://, azure://, gs://
   workflows.py the registry of approved workflows
   schemas/     published JSON Schemas (platform) and HydroCoupleSDK copies
+images/        the runner and agent images, and their build, SBOM and signing script
+deploy/        Kustomize install for Kubernetes targets, OpenTofu modules per cloud, the cloud gate
+tests/k8s/     tests against a Kubernetes cluster (HCP_TEST_KUBECONFIG)
 ```
 
 ## Running it locally
@@ -59,6 +69,31 @@ hcp agent --control-plane http://localhost:8080 --store file:///data/hcp-store \
 
 The control plane refuses to start without a token verifier; there is no unauthenticated mode.
 
+### A Kubernetes target
+
+The agent runs in the cluster, from `deploy/kustomize`. `deploy/kustomize/overlays/README.md` walks through onboarding:
+1. register the target with `hcp target register`, which prints its credential as a Secret;
+2. apply the overlay for EKS, AKS, GKE or an on-premises cluster;
+3. run `hcp agent --verify` inside the agent pod.
+
+`deploy/terraform/<cloud>` creates the store and the agent's and runners' workload identities. `hcp agent --dry-run` prints every call an agent configuration makes.
+
+### Studies
+
+A study runs an optimizer's candidates on an evaluator pool. With `openswmm_gymnasium` installed beside the client and the runner (the `gym.evaluate@1` workflow needs it, with openswmm `6.0.0a4.dev2` or later):
+
+```python
+from openswmm_gymnasium.optimize import OptimizationConfig
+from hydrocouple_platform.gym import run_platform_study
+
+result = run_platform_study(env_config, OptimizationConfig(algorithm="nsga2", budget=400, seed=3),
+                            "runs/detention", client=client, project_id=project_id,
+                            revision_id=revision_id, target_id=target_id,
+                            inp_path="model/model.inp", pool_size=4)
+```
+
+It writes the same `evaluations.jsonl` and `result.json` as `openswmm_gymnasium.optimize.run_study`. Any other ask/tell optimizer can drive a study through `POST /v1/studies` and `POST /v1/studies/{id}/batches`.
+
 An AI agent (for example through `openswmm.mcp`) works under an agent session: a person starts one with `POST /v1/agent-sessions`, choosing its budget, and gives the returned `hcps_...` credential to the agent. Everything the agent submits is checked against that budget; anything beyond it waits for a person's approval.
 
 ## Tests
@@ -69,7 +104,9 @@ pytest -m "not engine"                   # skip tests that run the real Solver
 ```
 
 - **PostgreSQL tests** need a server. Set `HCP_TEST_DATABASE_URL`, or set `HCP_TEST_PG_BIN` to a folder containing `initdb` and `pg_ctl`; with neither set, the `pgserver` package's binaries are used where it has wheels (macOS arm64, Linux x86_64). Each test gets its own database cloned from a migrated template.
-- **Engine tests** run the real `openswmm` Solver and skip when the installed engine cannot run on this CPU.
+- **Engine tests** run the real `openswmm` Solver and skip when the installed engine cannot run on this CPU. The study engine tests also need `openswmm_gymnasium` (and `platypus-opt` for NSGA-II) and skip without it.
+- **The adapter contract** (`tests/contract`) runs the same cases against every scheduler adapter: the local pool always, Kubernetes with a cluster. A new adapter adds a harness in `tests/contract/harnesses.py`.
+- **Kubernetes tests** (`-m k8s`) need a cluster (`HCP_TEST_KUBECONFIG`) and signed images; each module's docstring lists its settings. `tests/k8s/test_install_on_kubernetes.py` is the M4 gate, and `deploy/gate/README.md` runs it on EKS, AKS and GKE.
 - Files a test produces are kept under `test_artifacts/<module>/<test>/` for review.
 
 ## License

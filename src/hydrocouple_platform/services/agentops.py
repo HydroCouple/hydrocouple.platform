@@ -10,7 +10,7 @@ import time
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
@@ -62,7 +62,8 @@ class AgentServices(ServiceBase):
     # -- poll ------------------------------------------------------------------------
 
     def agent_poll(self, target_id: str, req: PollRequest) -> PollResponse:
-        """Claim leases and grant requests; waits up to ``req.wait_seconds`` for either.
+        """Claim leases, grant requests and erasures; waits up to ``req.wait_seconds`` for
+        any of them. Each is marked delivered when claimed, so a poll returns at once.
 
         The HTTP API runs the wait asynchronously (``api/app.py``); this blocking
         form serves in-process callers.
@@ -70,7 +71,8 @@ class AgentServices(ServiceBase):
         deadline = time.monotonic() + req.wait_seconds
         while True:
             response = self.poll_once(target_id, req)
-            if response.leases or response.grant_requests or time.monotonic() >= deadline:
+            if response.leases or response.grant_requests or response.erasures \
+                    or time.monotonic() >= deadline:
                 return response
             time.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
 
@@ -91,6 +93,7 @@ class AgentServices(ServiceBase):
                 target.capabilities = capabilities
 
             held = set(req.held_attempts)
+            self._release_attempts(s, target.id, req.agent_instance, held, now)
             leases = self._redeliver(s, target, req, held)
             slots = req.free_slots - len(leases)
             if slots > 0:
@@ -118,10 +121,25 @@ class AgentServices(ServiceBase):
             ]
             return PollResponse(leases=leases, grant_requests=grants,
                                 cancel_attempts=self._to_stop(s, target.id, held),
+                                erasures=self.pending_erasures(  # type: ignore[attr-defined]
+                                    s, target.id),
                                 poll_after_seconds=self.settings.heartbeat_interval_seconds)
 
+    @staticmethod
+    def _release_attempts(s: Session, target_id: str, instance: str, held: set[str],
+                          now) -> None:
+        """Ended attempts this agent no longer holds: nothing runs for them any more."""
+        terminal = [state.value for state in ATTEMPT_TERMINAL]
+        query = (update(Attempt).where(
+            Attempt.target_id == target_id, Attempt.agent_instance == instance,
+            Attempt.released_at.is_(None), Attempt.state.in_(terminal))
+            .values(released_at=now))
+        if held:
+            query = query.where(Attempt.id.notin_(held))
+        s.execute(query)
+
     def _to_stop(self, s: Session, target_id: str, held: set[str]) -> list[str]:
-        """Held attempts the agent must stop: cancelled, superseded, ended or unknown."""
+        """Held attempts the agent must stop: canceled, superseded, ended or unknown."""
         if not held:
             return []
         rows = {a.id: (a, j) for a, j in s.execute(
@@ -278,13 +296,21 @@ class AgentServices(ServiceBase):
                           fence=res.fencing_token)
         with self.tx() as s:
             job, attempt = self._locked(s, target_id, res.attempt_id)
-            run = s.get(Run, job.run_id, with_for_update=True)
+            # FOR NO KEY UPDATE: publication serializes on the run, but inserts that reference
+            # it (an evaluator pool's new task jobs) must not wait for it.
+            run = s.get(Run, job.run_id, with_for_update={"key_share": True})
             if (attempt.state == AttemptState.SUCCEEDED.value
-                    and run.canonical_attempt_id == attempt.id
-                    and res.outcome == AttemptOutcome.SUCCEEDED):
-                return ResultAck(job_state=job.state, canonical=True, retry_scheduled=False)
+                    and res.outcome == AttemptOutcome.SUCCEEDED
+                    and (run.canonical_attempt_id == attempt.id or job.study_id is not None)):
+                # A repeated report of a result already published.
+                return ResultAck(job_state=job.state, canonical=job.study_id is None,
+                                 retry_scheduled=False)
             self._authority(job, attempt, res.fencing_token)
+            attempt.released_at = self.now()  # the agent reports it finished
             spec = JobSpec.model_validate(job.spec)
+            if run.deleting_at is not None and res.outcome == AttemptOutcome.SUCCEEDED:
+                # Deleted while it ran: its outputs are being erased, so nothing is published.
+                res = res.model_copy(update={"outcome": AttemptOutcome.CANCELLED})
 
             if res.outcome == AttemptOutcome.SUCCEEDED:
                 manifest, problems, cls = self._check_manifest(spec, attempt, res)
@@ -294,7 +320,8 @@ class AgentServices(ServiceBase):
                     "outcome": AttemptOutcome.FAILED, "failure_class": cls,
                     "diagnostics": {**res.diagnostics, "manifest_problems": problems},
                 })
-            elif res.outcome == AttemptOutcome.CANCELLED and not job.cancel_requested:
+            elif (res.outcome == AttemptOutcome.CANCELLED and not job.cancel_requested
+                  and run.deleting_at is None):
                 # Nobody asked: an eviction, preemption or shutdown stopped it. Retry.
                 res = res.model_copy(update={
                     "outcome": AttemptOutcome.FAILED, "failure_class": FailureClass.INTERRUPTED})
@@ -325,6 +352,10 @@ class AgentServices(ServiceBase):
         for key, value in expected.items():
             if getattr(prov, key) != value:
                 problems.append(f"provenance {key} is {getattr(prov, key)!r}, expected {value!r}")
+        if prov.actor != spec.actor:
+            # The manifest names who asked for the work; it must be who the platform recorded.
+            problems.append(f"provenance actor {prov.actor.model_dump(exclude_none=True)} "
+                            f"is not the job's {spec.actor.model_dump(exclude_none=True)}")
         if manifest.status != "completed":
             problems.append(f"the run manifest status is {manifest.status}")
         paths = {a.path: a for a in manifest.artifacts}
@@ -349,10 +380,14 @@ class AgentServices(ServiceBase):
         attempt.finished_at, attempt.exit_code = now, res.exit_code
         attempt.manifest = res.attempt_manifest
         attempt.manifest_sha256 = res.attempt_manifest_sha256
-        canonical = run.canonical_attempt_id is None
+        # An evaluator task is one of many under its study's run; the study, not the run,
+        # holds the results, so every task's artifacts are recorded and none is canonical.
+        pool_task = job.study_id is not None
+        canonical = run.canonical_attempt_id is None and not pool_task
         if canonical:
             run.canonical_attempt_id, run.published_at = attempt.id, now
             run.summary = {"status": manifest.status, "quality": manifest.quality}
+        if canonical or pool_task:
             prefix = f"{spec.outputs.storage_prefix}{attempt.id}/"
             for a in manifest.artifacts:
                 s.add(Artifact(id=new_id("art"), organization_id=job.organization_id,
@@ -361,6 +396,8 @@ class AgentServices(ServiceBase):
                                sha256=a.sha256, size=a.size))
         self.audit(s, job.organization_id, {"target_id": job.target_id}, "run.publish", "run",
                    run.id, {"attempt_id": attempt.id, "canonical": canonical})
+        if pool_task:
+            self.study_attempt_ended(s, job, attempt, None)  # type: ignore[attr-defined]
         return ResultAck(job_state=job.state, canonical=canonical, retry_scheduled=False)
 
     def _fail(self, s: Session, job: Job, attempt: Attempt, res: AttemptResult) -> ResultAck:
@@ -378,6 +415,16 @@ class AgentServices(ServiceBase):
     def _end_attempt(self, s, job, attempt, terminal: AttemptState, failure_class: FailureClass,
                      exit_code: int | None, diagnostics: dict[str, Any],
                      cancelled: bool = False) -> ResultAck:
+        ack = self._end_attempt_state(s, job, attempt, terminal, failure_class, exit_code,
+                                      diagnostics, cancelled)
+        if job.study_id is not None:
+            # Its chunks go back to the queue; the pool is topped up if work remains.
+            self.study_attempt_ended(s, job, attempt, failure_class)  # type: ignore[attr-defined]
+        return ack
+
+    def _end_attempt_state(self, s, job, attempt, terminal: AttemptState,
+                           failure_class: FailureClass, exit_code: int | None,
+                           diagnostics: dict[str, Any], cancelled: bool) -> ResultAck:
         attempt.state = terminal.value
         attempt.failure_class = failure_class.value
         attempt.exit_code = exit_code
@@ -445,7 +492,7 @@ class AgentServices(ServiceBase):
             raise ValueError(f"unknown outbox topic {row.topic!r}")
         job = s.get(Job, row.payload["job_id"], with_for_update=True)
         if job is None or job.state != JobState.ACCEPTED.value:
-            return  # cancelled or already dispatched: nothing to do
+            return  # canceled or already dispatched: nothing to do
         spec = JobSpec.model_validate(job.spec)
         self._set_state(job, JobState.LEASABLE)
         job.leasable_at = self.now()
@@ -508,14 +555,21 @@ class AgentServices(ServiceBase):
                 select(Job).where(Job.state == JobState.LEASABLE.value,
                                   Job.queue_deadline_at < now)
                 .limit(limit).with_for_update(skip_locked=True)):
+                if job.state != JobState.LEASABLE.value:
+                    continue  # its study ended earlier in this pass and canceled it
                 self._set_state(job, JobState.TIMED_OUT, failure={
                     "class": FailureClass.CAPACITY.value,
                     "reason": "no capacity claimed the job before its queue deadline"})
+                self.study_job_timed_out_in_queue(s, job)  # type: ignore[attr-defined]
                 counts["queue_timeouts"] += 1
             for approval in s.scalars(
                 select(Approval).where(Approval.state == "PENDING", Approval.expires_at < now)
                 .limit(limit).with_for_update(skip_locked=True)):
                 approval.state = "EXPIRED"
+                if approval.study_id is not None:
+                    self.expire_study_approval(s, approval)  # type: ignore[attr-defined]
+                    counts["approvals_expired"] += 1
+                    continue
                 job = s.get(Job, approval.job_id, with_for_update=True)
                 if job.state == JobState.PENDING_APPROVAL.value:
                     self._set_state(job, JobState.REJECTED,
@@ -532,4 +586,8 @@ class AgentServices(ServiceBase):
                     if rev.state == "VERIFYING":
                         rev.state = "FAILED"
                 counts["grants_expired"] += 1
+        counts.update(self.reconcile_studies(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_deletions(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_schedules(limit))  # type: ignore[attr-defined]
+        counts.update(self.reconcile_agent_sessions(limit))  # type: ignore[attr-defined]
         return counts

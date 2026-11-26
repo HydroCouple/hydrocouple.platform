@@ -11,6 +11,7 @@ FastAPI must evaluate the dependency aliases defined inside ``create_app``.
 
 
 import asyncio
+import dataclasses
 import time
 from typing import Annotated, Any
 
@@ -31,15 +32,36 @@ from ..contracts.agent import (
     PollResponse,
     ResultAck,
 )
+from ..contracts.deletion import DeletionView, ErasureReport
 from ..contracts.errors import ErrorBody, ErrorCode, PlatformError
 from ..contracts.requests import (
     AgentSessionCreate,
+    AgentSessionView,
     Estimate,
     JobView,
+    OrganizationPolicy,
+    PriceTable,
     RevisionCreate,
     RunAccepted,
     RunRequest,
     TargetCreate,
+)
+from ..contracts.schedules import (
+    ProposalCreate,
+    ProposalDecision,
+    ProposalView,
+    ScheduleCreate,
+    ScheduleView,
+)
+from ..contracts.studies import (
+    BatchSubmit,
+    BatchView,
+    CompletionAck,
+    EvaluationCompletion,
+    EvaluationLeaseRequest,
+    EvaluationLeaseResponse,
+    StudyCreate,
+    StudyView,
 )
 from ..db import make_engine, make_sessionmaker
 from ..db.models import ComputeTarget
@@ -69,6 +91,10 @@ class ApprovalBody(_Body):
 
 class DownloadBody(_Body):
     paths: list[str]
+
+
+class ChunkDownloadBody(_Body):
+    chunk_ids: list[str]
 
 
 def _bearer(authorization: str | None) -> str:
@@ -106,14 +132,27 @@ def create_app(
                          details={"errors": exc.errors()})
         return JSONResponse(body.model_dump(mode="json"), status_code=422)
 
-    def principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
-        """A person, or an AI agent session acting for a person under its budget."""
+    def principal(
+        authorization: Annotated[str | None, Header()] = None,
+        tool_call: Annotated[str | None, Header(alias="X-HCP-Tool-Call-Id")] = None,
+    ) -> Principal:
+        """A person, or an AI agent session acting for a person under its budget.
+
+        An agent names the tool call behind each request in ``X-HCP-Tool-Call-Id``; the
+        services record it in the actor chain of whatever the request changes."""
         token = _bearer(authorization)
         if token.startswith(AGENT_CREDENTIAL_PREFIX):
             raise PlatformError(ErrorCode.FORBIDDEN, "agent credentials cannot call client routes")
         if token.startswith(SESSION_CREDENTIAL_PREFIX):
-            return svc.session_principal(token)
-        return svc.principal_for(verifier.verify(token))
+            caller = svc.session_principal(token)
+        else:
+            caller = svc.principal_for(verifier.verify(token))
+        if tool_call is None:
+            return caller
+        if not 1 <= len(tool_call) <= 200 or not tool_call.isprintable():
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                "X-HCP-Tool-Call-Id must be 1 to 200 printable characters")
+        return dataclasses.replace(caller, tool_call_id=tool_call)
 
     def _agent_token(authorization: str | None) -> str:
         token = _bearer(authorization)
@@ -140,7 +179,9 @@ def create_app(
 
     @app.get("/v1/me")
     def me(p: User) -> dict[str, Any]:
-        return {"user_id": p.user_id, "subject": p.subject, "roles": p.roles}
+        # agent_session_id names the session an agent session credential belongs to.
+        return {"user_id": p.user_id, "subject": p.subject, "roles": p.roles,
+                "agent_session_id": p.agent_session_id}
 
     @app.get("/v1/workflows")
     def workflows(_: User) -> list[dict[str, Any]]:
@@ -169,6 +210,14 @@ def create_app(
     def revoke_target(target_id: str, p: User) -> None:
         svc.revoke_target(p, target_id)
 
+    @app.put("/v1/targets/{target_id}/prices")
+    def set_target_prices(target_id: str, body: PriceTable, p: User) -> dict:
+        return svc.set_target_prices(p, target_id, body)
+
+    @app.put("/v1/organizations/{org_id}/policy")
+    def set_policy(org_id: str, body: OrganizationPolicy, p: User) -> dict:
+        return svc.set_policy(p, org_id, body)
+
     @app.post("/v1/projects/{project_id}/sessions", status_code=201)
     def create_session(project_id: str, body: NameBody, p: User) -> dict:
         return svc.create_session(p, project_id, body.name)
@@ -184,6 +233,11 @@ def create_app(
     @app.post("/v1/agent-sessions/{agent_session_id}/revoke", status_code=204)
     def revoke_agent_session(agent_session_id: str, p: User) -> None:
         svc.revoke_agent_session(p, agent_session_id)
+
+    @app.get("/v1/agent-session")
+    def agent_session(p: User) -> AgentSessionView:
+        # The calling agent session's budget, use and what is left.
+        return svc.agent_session_view(p)
 
     # -- revisions and grants ---------------------------------------------------
 
@@ -224,9 +278,21 @@ def create_app(
     def results(run_id: str, p: User) -> dict:
         return svc.get_results(p, run_id)
 
+    @app.get("/v1/runs/{run_id}/manifest")
+    def attempt_manifest(run_id: str, p: User) -> dict:
+        return svc.get_attempt_manifest(p, run_id)
+
     @app.post("/v1/runs/{run_id}/downloads", status_code=202)
     def downloads(run_id: str, body: DownloadBody, p: User) -> dict:
         return svc.request_downloads(p, run_id, body.paths)
+
+    @app.delete("/v1/runs/{run_id}", status_code=202)
+    def delete_run(run_id: str, p: User) -> DeletionView:
+        return svc.delete_run(p, run_id)
+
+    @app.get("/v1/deletions/{deletion_id}")
+    def get_deletion(deletion_id: str, p: User) -> DeletionView:
+        return svc.get_deletion(p, deletion_id)
 
     @app.get("/v1/jobs/{job_id}")
     def get_job(job_id: str, p: User) -> JobView:
@@ -249,6 +315,94 @@ def create_app(
     def resolve_approval(approval_id: str, body: ApprovalBody, p: User) -> dict:
         return svc.resolve_approval(p, approval_id, body.approve, body.note)
 
+    # -- studies ------------------------------------------------------------------------
+
+    def _key(value: str | None) -> str:
+        if not value:
+            raise PlatformError(ErrorCode.VALIDATION_ERROR, "an Idempotency-Key header is required",
+                                next_action="Send a unique key and reuse it when retrying.")
+        return value
+
+    IdempotencyKey = Annotated[str | None, Header(alias="Idempotency-Key")]
+
+    @app.post("/v1/studies", status_code=201)
+    def create_study(body: StudyCreate, p: User, key: IdempotencyKey = None) -> StudyView:
+        return svc.create_study(p, body, _key(key))
+
+    @app.post("/v1/studies/{study_id}/downloads", status_code=202)
+    def study_downloads(study_id: str, body: ChunkDownloadBody, p: User) -> dict:
+        return svc.request_study_downloads(p, study_id, body.chunk_ids)
+
+    @app.post("/v1/studies/estimate")
+    def estimate_study(body: StudyCreate, p: User) -> Estimate:
+        return svc.estimate_study(p, body)
+
+    @app.get("/v1/studies/{study_id}")
+    def get_study(study_id: str, p: User) -> StudyView:
+        return svc.get_study(p, study_id)
+
+    @app.post("/v1/studies/{study_id}/batches", status_code=202)
+    def submit_batch(study_id: str, body: BatchSubmit, p: User,
+                     key: IdempotencyKey = None) -> BatchView:
+        return svc.submit_batch(p, study_id, body, _key(key))
+
+    @app.get("/v1/studies/{study_id}/batches/{batch_id}")
+    def get_batch(study_id: str, batch_id: str, p: User) -> BatchView:
+        return svc.get_batch(p, study_id, batch_id)
+
+    @app.post("/v1/studies/{study_id}/close")
+    def close_study(study_id: str, p: User) -> StudyView:
+        return svc.close_study(p, study_id)
+
+    @app.post("/v1/studies/{study_id}/cancel", status_code=202)
+    def cancel_study(study_id: str, p: User) -> StudyView:
+        return svc.cancel_study(p, study_id)
+
+    @app.delete("/v1/studies/{study_id}", status_code=202)
+    def delete_study(study_id: str, p: User) -> DeletionView:
+        return svc.delete_study(p, study_id)
+
+    @app.get("/v1/studies/{study_id}/results")
+    def study_results(study_id: str, p: User) -> dict:
+        return svc.study_results(p, study_id)
+
+    @app.get("/v1/studies/{study_id}/evaluations")
+    def study_evaluations(study_id: str, p: User, after: int = 0, limit: int = 500) -> dict:
+        return svc.list_evaluations(p, study_id, after, limit)
+
+    @app.get("/v1/studies/{study_id}/manifest")
+    def study_manifest(study_id: str, p: User) -> dict:
+        return svc.study_manifest(p, study_id)
+
+    @app.post("/v1/schedules", status_code=201)
+    def create_schedule(body: ScheduleCreate, p: User,
+                        key: IdempotencyKey = None) -> ScheduleView:
+        return svc.create_schedule(p, body, _key(key))
+
+    @app.get("/v1/schedules/{schedule_id}")
+    def get_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.get_schedule(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/pause")
+    def pause_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.pause_schedule(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/resume")
+    def resume_schedule(schedule_id: str, p: User) -> ScheduleView:
+        return svc.resume_schedule(p, schedule_id)
+
+    @app.get("/v1/schedules/{schedule_id}/proposals")
+    def list_proposals(schedule_id: str, p: User) -> list[ProposalView]:
+        return svc.list_proposals(p, schedule_id)
+
+    @app.post("/v1/schedules/{schedule_id}/proposals", status_code=201)
+    def propose_setpoint(schedule_id: str, body: ProposalCreate, p: User) -> ProposalView:
+        return svc.propose_setpoint(p, schedule_id, body)
+
+    @app.post("/v1/proposals/{proposal_id}/decision")
+    def decide_proposal(proposal_id: str, body: ProposalDecision, p: User) -> ProposalView:
+        return svc.decide_proposal(p, proposal_id, body)
+
     # -- agent routes -------------------------------------------------------------------
 
     AttemptToken = Annotated[str | None, Header(alias="X-HC-Attempt-Token")]
@@ -264,13 +418,19 @@ def create_app(
         deadline = time.monotonic() + body.wait_seconds
         while True:
             response = await run_in_threadpool(svc.poll_once, t.id, body)
-            if response.leases or response.grant_requests or time.monotonic() >= deadline:
+            # Each is marked delivered when claimed, so it is returned at once.
+            if response.leases or response.grant_requests or response.erasures \
+                    or time.monotonic() >= deadline:
                 return response
             await asyncio.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
 
     @app.post("/v1/agent/grants", status_code=204)
     def agent_grants(body: GrantFulfillment, t: DrainingAgent) -> None:
         svc.agent_fulfill_grant(t, body)
+
+    @app.post("/v1/agent/erasures")
+    def agent_erasures(body: ErasureReport, t: DrainingAgent) -> DeletionView:
+        return svc.agent_erasure_report(t.id, body)
 
     @app.post("/v1/agent/heartbeat")
     def agent_heartbeat(body: Heartbeat, t: DrainingAgent,
@@ -281,5 +441,22 @@ def create_app(
     def agent_result(body: AttemptResult, t: DrainingAgent,
                      token: AttemptToken = None) -> ResultAck:
         return svc.agent_complete(t.id, _attempt_token(token), body)
+
+    @app.post("/v1/agent/evaluations/lease")
+    async def evaluation_lease(body: EvaluationLeaseRequest, t: Agent,
+                               token: AttemptToken = None) -> EvaluationLeaseResponse:
+        # More evaluations are new work, so a revoked target gets none.
+        attempt_token = _attempt_token(token)
+        deadline = time.monotonic() + body.wait_seconds
+        while True:
+            response = await run_in_threadpool(svc.evaluation_lease, t.id, attempt_token, body)
+            if response.chunk or response.done or time.monotonic() >= deadline:
+                return response
+            await asyncio.sleep(min(0.5, max(deadline - time.monotonic(), 0)))
+
+    @app.post("/v1/agent/evaluations/complete")
+    def evaluation_complete(body: EvaluationCompletion, t: DrainingAgent,
+                            token: AttemptToken = None) -> CompletionAck:
+        return svc.evaluation_complete(t.id, _attempt_token(token), body)
 
     return app

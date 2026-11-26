@@ -1,0 +1,29 @@
+{
+  "$id": "https://hydrocouple.org/schema/platform/agent-evaluation-lease-request-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "attempt_id": {
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "fencing_token": {
+      "minimum": 1,
+      "title": "Fencing Token",
+      "type": "integer"
+    },
+    "wait_seconds": {
+      "default": 0,
+      "maximum": 30,
+      "minimum": 0,
+      "title": "Wait Seconds",
+      "type": "number"
+    }
+  },
+  "required": [
+    "attempt_id",
+    "fencing_token"
+  ],
+  "title": "EvaluationLeaseRequest",
+  "type": "object"
+}

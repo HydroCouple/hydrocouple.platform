@@ -65,6 +65,15 @@ class DirectAgentClient:
     def result(self, token: str, res: AttemptResult):
         return self.services.agent_complete(self.target_id, token, res)
 
+    def lease_evaluations(self, token: str, req):
+        return self.services.evaluation_lease(self.target_id, token, req)
+
+    def complete_evaluations(self, token: str, body):
+        return self.services.evaluation_complete(self.target_id, token, body)
+
+    def erasure(self, report):
+        self.services.agent_erasure_report(self.target_id, report)
+
 
 @dataclass
 class World:
@@ -179,3 +188,13 @@ def fake_outputs(world: World, lease: LeaseGrant, *, status: str = "completed",
     return AttemptResult(attempt_id=lease.attempt_id, fencing_token=lease.fencing_token,
                          outcome=AttemptOutcome.SUCCEEDED, exit_code=0,
                          attempt_manifest=manifest, attempt_manifest_sha256=sha256_of(manifest))
+
+
+def read_from(store, folder):
+    """``read(key)`` for StudyLineage.check_evaluations, through a copy in ``folder``."""
+    def read(key: str) -> bytes:
+        out = folder / "lineage-objects" / key.replace("/", "_")
+        out.parent.mkdir(parents=True, exist_ok=True)
+        store.get_file(key, out)
+        return out.read_bytes()
+    return read

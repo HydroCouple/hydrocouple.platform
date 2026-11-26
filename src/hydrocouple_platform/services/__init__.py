@@ -8,11 +8,16 @@ from __future__ import annotations
 from .agentops import AgentServices
 from .auth import Principal, UserTokenVerifier, VerifiedClaims
 from .catalog import CatalogServices
+from .deletions import DeletionServices
+from .estimates import EstimateServices
 from .revisions import RevisionServices
 from .runs import RunServices
+from .schedules import ScheduleServices
+from .studies import StudyServices
 
 
-class PlatformServices(CatalogServices, RevisionServices, RunServices, AgentServices):
+class PlatformServices(CatalogServices, RevisionServices, RunServices, StudyServices,
+                       ScheduleServices, DeletionServices, AgentServices, EstimateServices):
     """All platform operations behind one interface."""
 
 

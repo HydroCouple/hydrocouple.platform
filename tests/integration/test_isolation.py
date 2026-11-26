@@ -78,6 +78,7 @@ def test_http_authentication_and_error_bodies(services, artifact_dir, server, ma
     world = make_world(services, artifact_dir)
     with PlatformClient(server, make_token("alice")) as client:
         assert client.me()["roles"] == {world.org_id: "admin"}
+        assert client.me()["agent_session_id"] is None  # a person, not an agent session
         with pytest.raises(PlatformError) as err:
             client.job("job_doesnotexist")
         assert err.value.code == ErrorCode.NOT_FOUND

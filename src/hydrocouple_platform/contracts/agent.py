@@ -15,6 +15,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capabilities import AdapterCapabilities
+from .deletion import Erasure
 from .jobs import FailureClass, JobSpec
 from .states import AttemptState
 
@@ -105,6 +106,8 @@ class PollResponse(_Model):
     leases: list[LeaseGrant] = Field(default_factory=list)
     grant_requests: list[GrantRequest] = Field(default_factory=list)
     cancel_attempts: list[str] = Field(default_factory=list)
+    # Deleted runs whose objects this agent must erase (contracts.deletion).
+    erasures: list[Erasure] = Field(default_factory=list)
     poll_after_seconds: float = 2.0
 
 

@@ -1,0 +1,32 @@
+# What the agent may do, in its own namespace only: run attempts as Jobs, read their pods
+# and logs, and keep each attempt's Secret. It needs nothing cluster-wide.
+# (hydrocouple_platform.agent.adapters.kubernetes.REQUIRED_PERMISSIONS checks these.)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: hcp-agent
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "get", "list", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: hcp-agent
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: hcp-agent
+subjects:
+  - kind: ServiceAccount
+    name: hcp-agent

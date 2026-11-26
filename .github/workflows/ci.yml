@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ruff:
+    name: Ruff
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ruff
+        # The version pinned in pyproject.toml, so CI and local lint agree.
+        run: pip install ruff==0.15.14
+
+      - name: ruff check
+        run: ruff check .
+
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the platform with its dev extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: PostgreSQL binaries are present
+        # Without them every postgres test skips and the run passes while testing little.
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, "tests")
+          from pgcluster import find_pg_bin
+          assert find_pg_bin(), "no PostgreSQL binaries (pgserver): the postgres tests would all skip"
+          PY
+
+      - name: Run the tests
+        # Unit, storage, integration on a private PostgreSQL, the engine tests and the adapter
+        # contract suite on the local pool. The Kubernetes tests need a cluster.
+        run: pytest -m "not k8s"
+
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: python -m pip install -e ".[docs]"
+      - run: python -m sphinx -W --keep-going -b html docs build/docs
+      - uses: actions/upload-artifact@v4
+        with: { name: platform-docs, path: build/docs }
+      # Packaged here, not in the deploy job: deploy-pages can look the artifact up before an
+      # upload made in its own job is listed ("No artifacts named github-pages").
+      - uses: actions/upload-pages-artifact@v4
+        with: { path: build/docs }
+
+  # Publishes the manual built above to https://www.hydrocouple.org/hydrocouple.platform/.
+  # The github-pages environment must allow the branch (main, dev).
+  deploy-docs:
+    name: Deploy documentation to GitHub Pages
+    if: |
+      github.event_name != 'pull_request'
+      && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')
+    needs: docs
+    runs-on: ubuntu-latest
+    permissions: { pages: write, id-token: write }
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    concurrency: { group: pages, cancel-in-progress: false }
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v5

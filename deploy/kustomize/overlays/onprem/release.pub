@@ -1,0 +1,2 @@
+REPLACE with the platform's release public key (cosign PEM). The agent refuses every
+image until this is a real key.

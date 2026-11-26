@@ -32,6 +32,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+docs = ["sphinx-autoapi>=3.8,<4", "sphinx>=7.4", "pydata-sphinx-theme>=0.15"]
 # Control plane: API, services, dispatcher, reconciler.
 server = [
     "sqlalchemy>=2.0",
@@ -45,13 +46,25 @@ server = [
 # Execution agent: runs in the customer's account or site.
 agent = [
     "pydantic-settings>=2.2",
+    # The Kubernetes adapter.
+    "kubernetes>=31",
 ]
 # Runner: executes approved workflows next to the engine.
 runner = [
     "openswmm>=6.0.0a4.dev1",
 ]
+# Object storage backends, for the agent and the runner.
+s3 = ["boto3>=1.35"]
+azure = ["azure-storage-blob>=12.19", "azure-identity>=1.15"]
+gcs = ["google-cloud-storage>=2.16"]
+# The gym.evaluate@1 evaluator and the run_platform_study client driver.
+gym = [
+    # 0.1.0.dev1: the study manifest (optimize.manifest) run_platform_study writes.
+    "openswmm.gymnasium[spec,platypus]>=0.1.0.dev1",
+]
 dev = [
-    "hydrocouple.platform[server,agent,runner]",
+    "hydrocouple.platform[server,agent,runner,s3,azure,gcs]",
+    "moto[server]>=5",
     "pytest>=8.0",
     "ruff==0.15.14",
     # Embedded PostgreSQL for tests, where it publishes wheels.
@@ -72,13 +85,15 @@ testpaths = ["tests"]
 markers = [
     "postgres: needs a real PostgreSQL server (HCP_TEST_DATABASE_URL or HCP_TEST_PG_BIN)",
     "engine: runs the real openswmm Solver",
+    "k8s: needs a Kubernetes cluster (HCP_TEST_KUBECONFIG)",
 ]
 
 [tool.ruff]
 line-length = 100
 target-version = "py310"
 src = ["src", "tests"]
-extend-exclude = ["src/hydrocouple_platform/db/migrations/versions"]
+# docs/_hydrocouple is the HydroCouple documentation theme, copied unchanged into every manual.
+extend-exclude = ["src/hydrocouple_platform/db/migrations/versions", "docs/_hydrocouple"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP"]

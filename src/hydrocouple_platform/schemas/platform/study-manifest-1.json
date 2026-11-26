@@ -1,0 +1,267 @@
+{
+  "$defs": {
+    "Objective": {
+      "additionalProperties": false,
+      "properties": {
+        "direction": {
+          "enum": [
+            "minimize",
+            "maximize"
+          ],
+          "title": "Direction",
+          "type": "string"
+        },
+        "name": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "direction"
+      ],
+      "title": "Objective",
+      "type": "object"
+    },
+    "StudyDefinition": {
+      "additionalProperties": false,
+      "description": "What a study evaluates and how it searches: the same wherever it runs.",
+      "properties": {
+        "dimensions": {
+          "description": "Components in decision-vector order; each evaluation's decisions[key] lists its key's components in this order",
+          "items": {
+            "$ref": "#/$defs/StudyDimension"
+          },
+          "title": "Dimensions",
+          "type": "array"
+        },
+        "env_config": {
+          "additionalProperties": true,
+          "description": "The evaluator env config; its model path is the path in the package",
+          "title": "Env Config",
+          "type": "object"
+        },
+        "model_inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Package path to sha256 of every packaged file except composition.json, which records when it was packaged",
+          "title": "Model Inputs",
+          "type": "object"
+        },
+        "objectives": {
+          "items": {
+            "$ref": "#/$defs/Objective"
+          },
+          "title": "Objectives",
+          "type": "array"
+        },
+        "optimization": {
+          "additionalProperties": true,
+          "title": "Optimization",
+          "type": "object"
+        },
+        "seed": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Seed"
+        },
+        "workflow": {
+          "title": "Workflow",
+          "type": "string"
+        },
+        "workflow_version": {
+          "title": "Workflow Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "workflow",
+        "workflow_version",
+        "model_inputs",
+        "env_config",
+        "dimensions",
+        "objectives",
+        "optimization"
+      ],
+      "title": "StudyDefinition",
+      "type": "object"
+    },
+    "StudyDimension": {
+      "additionalProperties": false,
+      "description": "One component of the decision vector, with the decision key it belongs to.",
+      "properties": {
+        "choices": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "number"
+              },
+              "maxItems": 10000,
+              "minItems": 2,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "For a discrete component, the values it chooses from: the component lies in [0, len(choices)] and its integer part (at most the last index) picks the value an evaluation records",
+          "title": "Choices"
+        },
+        "high": {
+          "title": "High",
+          "type": "number"
+        },
+        "key": {
+          "description": "The key of the component's values in an evaluation's decisions",
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Key",
+          "type": "string"
+        },
+        "label": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Label",
+          "type": "string"
+        },
+        "low": {
+          "title": "Low",
+          "type": "number"
+        }
+      },
+      "required": [
+        "label",
+        "low",
+        "high",
+        "key"
+      ],
+      "title": "StudyDimension",
+      "type": "object"
+    },
+    "StudyEvaluation": {
+      "additionalProperties": false,
+      "description": "One evaluated candidate, as ``evaluations.jsonl`` records it.",
+      "properties": {
+        "decisions": {
+          "additionalProperties": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "title": "Decisions",
+          "type": "object"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error"
+        },
+        "evaluation": {
+          "minimum": 1,
+          "title": "Evaluation",
+          "type": "integer"
+        },
+        "failed": {
+          "default": false,
+          "title": "Failed",
+          "type": "boolean"
+        },
+        "metrics": {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": "Every value the evaluator reports for a candidate, objective or not, as reported (not negated for a maximized objective); null when it was not finite",
+          "title": "Metrics",
+          "type": "object"
+        },
+        "objectives": {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "title": "Objectives",
+          "type": "object"
+        },
+        "steps": {
+          "default": 0,
+          "title": "Steps",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "evaluation",
+        "decisions",
+        "objectives"
+      ],
+      "title": "StudyEvaluation",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/study-manifest-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A study's definition, every evaluation and its result, written by a local run and by\na platform run alike. Two executions of one study differ only in ``runtime``.",
+  "properties": {
+    "definition": {
+      "$ref": "#/$defs/StudyDefinition"
+    },
+    "evaluations": {
+      "items": {
+        "$ref": "#/$defs/StudyEvaluation"
+      },
+      "title": "Evaluations",
+      "type": "array"
+    },
+    "result": {
+      "additionalProperties": true,
+      "description": "Pareto set or best candidate, and counts",
+      "title": "Result",
+      "type": "object"
+    },
+    "runtime": {
+      "additionalProperties": true,
+      "description": "Where and how it ran: ids, hosts, workers, timings",
+      "title": "Runtime",
+      "type": "object"
+    },
+    "schema": {
+      "const": "hydrocouple.platform/study-manifest/1",
+      "default": "hydrocouple.platform/study-manifest/1",
+      "title": "Schema",
+      "type": "string"
+    }
+  },
+  "required": [
+    "definition",
+    "evaluations",
+    "result",
+    "runtime"
+  ],
+  "title": "StudyManifest",
+  "type": "object"
+}

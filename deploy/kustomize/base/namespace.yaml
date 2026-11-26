@@ -1,0 +1,8 @@
+# Runner pods meet the "restricted" Pod Security Standard; the namespace enforces it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: hydrocouple
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest

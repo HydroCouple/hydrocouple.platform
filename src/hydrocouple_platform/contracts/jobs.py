@@ -9,7 +9,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
 JOB_SPEC_VERSION = "1"
 
@@ -45,6 +45,8 @@ class FailureClass(str, Enum):
     TRANSFER = "transfer"
     TIMEOUT = "timeout"
     LOST = "lost"
+    # The image is not signed by a key the agent pins: never retried.
+    UNTRUSTED_IMAGE = "untrusted_image"
     UNKNOWN = "unknown"
 
 
@@ -61,6 +63,7 @@ FAILURE_RETRIES: dict[FailureClass, int] = {
     FailureClass.TRANSFER: 1_000,
     FailureClass.TIMEOUT: 0,
     FailureClass.LOST: 1_000,
+    FailureClass.UNTRUSTED_IMAGE: 0,
     FailureClass.UNKNOWN: 1,
 }
 
@@ -89,12 +92,35 @@ class Runtime(_Model):
     image: str | None = None
     architecture: str | None = None
     threads: int = Field(default=1, ge=1)
+    host: str | None = Field(
+        default=None, description="The composition host the workflow needs on the target")
+
+    @model_serializer(mode="wrap")
+    def _no_host_no_key(self, handler):
+        # Absent, not null, so job specs of workflows without a host read as before.
+        data = handler(self)
+        if self.host is None:
+            data.pop("host", None)
+        return data
 
 
 class InputFile(_Model):
     path: str
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     size: int = Field(ge=0)
+
+
+class ArtifactInput(_Model):
+    """A file another run published, staged as an input: a twin cycle's previous state."""
+
+    role: Literal["resume"] = "resume"
+    path: str = Field(description="Where the runner stages it, relative to its inputs")
+    key: str = Field(description="Its object key in the target's storage")
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+    run_id: str
+    attempt_id: str
+    source_path: str = Field(description="Its path among that attempt's artifacts")
 
 
 class Inputs(_Model):
@@ -104,6 +130,8 @@ class Inputs(_Model):
     composition: str = "composition.json"
     # Every file of the revision; the runner checks each one before running.
     files: list[InputFile] = Field(min_length=1)
+    # Files of earlier runs, checked the same way (a resumed run's saved state).
+    artifacts: list[ArtifactInput] = Field(default_factory=list)
 
 
 class Resources(_Model):

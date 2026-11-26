@@ -27,6 +27,8 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from ..contracts.deletion import DeletionState
+from ..contracts.schedules import Pace, ProposalState, ScheduleState
 from ..contracts.states import AttemptState, JobState
 
 
@@ -57,6 +59,8 @@ class Organization(Base):
     __tablename__ = "organizations"
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
+    # OrganizationPolicy: rules its admins set for every submission (absent: none).
+    policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _ts()
 
 
@@ -110,6 +114,8 @@ class ComputeTarget(Base):
     egress_policy: Mapped[str] = mapped_column(String(20))
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True)
     capabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # PriceTable: the price of an hour of each profile; absent, spend cannot be estimated.
+    price_table: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     agent_instance: Mapped[str | None] = mapped_column(String(128))
     agent_version: Mapped[str | None] = mapped_column(String(40))
     last_poll_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
@@ -169,9 +175,32 @@ class AgentSession(Base):
     budget: Mapped[dict[str, Any]] = mapped_column(JSONB)
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True)
     runs_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    # Estimated spend of every run and study the session submitted that had an estimate.
+    estimated_spend: Mapped[float] = mapped_column(Float, default=0.0)
+    # When the reconciler ended the session's work at its wall time (once).
+    work_ended_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     created_at: Mapped[datetime] = _ts()
     expires_at: Mapped[datetime] = _ts()
     revoked_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+
+
+class EstimateRow(Base):
+    """An estimate a later submission can name: what it priced, for whom, until when."""
+
+    __tablename__ = "estimates"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    kind: Mapped[str] = mapped_column(String(10))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    evaluations: Mapped[int] = mapped_column(Integer)
+    estimated_spend: Mapped[float | None] = mapped_column(Float)
+    requires_approval: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = _ts()
+    expires_at: Mapped[datetime] = _ts()
+    __table_args__ = (CheckConstraint("kind in ('run','study')", name="estimate_kind_known"),)
 
 
 class Run(Base):
@@ -195,6 +224,9 @@ class Run(Base):
     canonical_attempt_id: Mapped[str | None] = mapped_column(String(40))
     published_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     summary: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Deletion (plan §12): set when it is requested, and when the erasure is confirmed.
+    deleting_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    deleted_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     __table_args__ = (
         UniqueConstraint("organization_id", "idempotency_key", name="runs_idempotency"),
         Index("runs_history", "organization_id", "project_id", "created_at"),
@@ -216,6 +248,10 @@ class Job(Base):
     retry_budget: Mapped[int] = mapped_column(Integer)
     failure: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     progress: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # Evaluator-pool task jobs belong to a study; a retired task takes no more work.
+    study_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studies.id", name="jobs_study_fk"), index=True)
+    retired_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     version: Mapped[int] = mapped_column(Integer, default=1)
     leasable_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     queue_deadline_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
@@ -251,9 +287,14 @@ class Attempt(Base):
     manifest: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     manifest_sha256: Mapped[str | None] = mapped_column(String(64))
     last_sequence: Mapped[int] = mapped_column(Integer, default=-1)
+    # When its agent confirmed nothing runs for it any more: by reporting its result, or by
+    # polling without holding it once it ended. Until then it may still write (deletion).
+    released_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     __table_args__ = (
         CheckConstraint(_states_check(AttemptState), name="attempt_state_known"),
         UniqueConstraint("job_id", "number", name="attempt_fence_unique"),
+        Index("attempts_unreleased", "target_id", "agent_instance",
+              postgresql_where="released_at IS NULL"),
         Index("attempts_expiry", "state", "lease_expires_at"),
         Index("attempts_deadline", "state", "execution_deadline_at"),
     )
@@ -301,8 +342,13 @@ class Approval(Base):
     organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
     project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"))
-    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"))
+    # A run approval names its job; a study approval names its study instead.
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("jobs.id"))
+    study_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studies.id", name="approvals_study_fk"))
     agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    # The actor chain of the request waiting for approval; absent before migration 0005.
+    actor: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     reasons: Mapped[list[Any]] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(String(20), default="PENDING")
     requested_at: Mapped[datetime] = _ts()
@@ -310,6 +356,110 @@ class Approval(Base):
     resolved_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
     resolved_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class Study(Base):
+    """A registered evaluation function; its evaluator pool tasks are jobs of ``run_id``."""
+
+    __tablename__ = "studies"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("platform_sessions.id"))
+    revision_id: Mapped[str] = mapped_column(ForeignKey("revisions.id"))
+    target_id: Mapped[str] = mapped_column(ForeignKey("compute_targets.id"))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    state: Mapped[str] = mapped_column(String(20))
+    # Dimensions, objectives, seed, failed-candidate policy and pool task template.
+    definition: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    max_evaluations: Mapped[int] = mapped_column(Integer)
+    pool_size: Mapped[int] = mapped_column(Integer)
+    batches_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    evaluations_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    # Not maintained since completions share the study row: the count is the sum of the
+    # batches' completed (StudyServices._completed).
+    evaluations_completed: Mapped[int] = mapped_column(Integer, default=0)
+    evaluations_failed: Mapped[int] = mapped_column(Integer, default=0)
+    # Task jobs that failed since a chunk last completed; too many ends the study.
+    task_failures: Mapped[int] = mapped_column(Integer, default=0)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    failure: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()
+    terminal_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    __table_args__ = (
+        CheckConstraint("state in ('PENDING_APPROVAL','OPEN','CLOSED','COMPLETED','CANCELLED',"
+                        "'FAILED','REJECTED')", name="study_state_known"),
+        CheckConstraint("evaluations_submitted <= max_evaluations", name="study_budget"),
+        UniqueConstraint("organization_id", "idempotency_key", name="studies_idempotency"),
+    )
+
+
+class StudyBatch(Base):
+    __tablename__ = "study_batches"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    study_id: Mapped[str] = mapped_column(ForeignKey("studies.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    sequence: Mapped[int] = mapped_column(Integer)
+    # Evaluations submitted before this batch; candidate i is evaluation offset + i + 1.
+    offset: Mapped[int] = mapped_column(Integer)
+    size: Mapped[int] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    candidates: Mapped[list[Any]] = mapped_column(JSONB)
+    # Who proposed the candidates (person, agent session, tool call); absent before 0005.
+    actor: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    state: Mapped[str] = mapped_column(String(20))
+    completed: Mapped[int] = mapped_column(Integer, default=0)
+    results: Mapped[list[Any] | None] = mapped_column(JSONB)
+    created_at: Mapped[datetime] = _ts()
+    completed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    __table_args__ = (
+        CheckConstraint("state in ('QUEUED','DONE','CANCELLED','FAILED')",
+                        name="batch_state_known"),
+        UniqueConstraint("study_id", "idempotency_key", name="batches_idempotency"),
+        UniqueConstraint("study_id", "sequence", name="batches_sequence"),
+    )
+
+
+class EvaluationChunk(Base):
+    """The unit of an evaluation lease: candidates ``start..stop`` of one batch.
+
+    ``lease_number`` is the fence: a completion is accepted only at the current
+    number from the attempt that holds the chunk.
+    """
+
+    __tablename__ = "evaluation_chunks"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    study_id: Mapped[str] = mapped_column(ForeignKey("studies.id"))
+    batch_id: Mapped[str] = mapped_column(ForeignKey("study_batches.id"), index=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"))
+    batch_sequence: Mapped[int] = mapped_column(Integer)
+    start: Mapped[int] = mapped_column(Integer)
+    stop: Mapped[int] = mapped_column(Integer)
+    state: Mapped[str] = mapped_column(String(20), default="PENDING")
+    lease_number: Mapped[int] = mapped_column(Integer, default=0)
+    deliveries: Mapped[int] = mapped_column(Integer, default=0)
+    holder_attempt_id: Mapped[str | None] = mapped_column(String(40))
+    lease_expires_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    results: Mapped[list[Any] | None] = mapped_column(JSONB)
+    object_key: Mapped[str | None] = mapped_column(Text)
+    object_sha256: Mapped[str | None] = mapped_column(String(64))
+    object_size: Mapped[int | None] = mapped_column(BigInteger)
+    completed_attempt_id: Mapped[str | None] = mapped_column(String(40))
+    completed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    __table_args__ = (
+        CheckConstraint("state in ('PENDING','LEASED','DONE','CANCELLED')",
+                        name="chunk_state_known"),
+        CheckConstraint("start >= 0 and stop > start", name="chunk_range"),
+        Index("chunks_queue", "study_id", "state", "batch_sequence", "start"),
+        Index("chunks_expiry", "state", "lease_expires_at"),
+        Index("chunks_holder", "holder_attempt_id"),
+    )
 
 
 class Outbox(Base):
@@ -323,6 +473,134 @@ class Outbox(Base):
     processed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
     last_error: Mapped[str | None] = mapped_column(Text)
     __table_args__ = (Index("outbox_pending", "processed_at", "available_at"),)
+
+
+class Deletion(Base):
+    """The confirmed erasure of one run's objects (contracts.deletion); one per run."""
+
+    __tablename__ = "deletions"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    target_id: Mapped[str] = mapped_column(ForeignKey("compute_targets.id"))
+    study_id: Mapped[str | None] = mapped_column(
+        ForeignKey("studies.id", name="deletions_study_fk"))
+    state: Mapped[str] = mapped_column(String(30))
+    prefixes: Mapped[list[Any]] = mapped_column(JSONB)
+    passes: Mapped[int] = mapped_column(Integer, default=0)
+    objects_deleted: Mapped[int] = mapped_column(BigInteger, default=0)
+    reason: Mapped[str | None] = mapped_column(Text)
+    # When the agent may next be asked to erase, and when it last was.
+    not_before: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    delivered_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    requested_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    actor: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    requested_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()
+    completed_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    __table_args__ = (
+        CheckConstraint(_states_check(DeletionState), name="deletion_state_known"),
+        Index("deletions_work", "state", "updated_at"),
+        Index("deletions_target", "target_id", "state"),
+    )
+
+
+class Schedule(Base):
+    """The cycles of a digital twin; see ``contracts.schedules``."""
+
+    __tablename__ = "schedules"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"), index=True)
+    session_id: Mapped[str | None] = mapped_column(ForeignKey("platform_sessions.id"))
+    revision_id: Mapped[str] = mapped_column(ForeignKey("revisions.id"))
+    target_id: Mapped[str] = mapped_column(ForeignKey("compute_targets.id"))
+    workflow: Mapped[str] = mapped_column(String(120))
+    workflow_version: Mapped[str] = mapped_column(String(20))
+    parameters: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    # Model times: the engine's UTC wall clock, stored without a zone.
+    first_cycle_end: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    cycle_minutes: Mapped[float] = mapped_column(Float)
+    cycles: Mapped[int | None] = mapped_column(Integer)
+    pace: Mapped[str] = mapped_column(String(20))
+    lag_seconds: Mapped[float] = mapped_column(Float, default=0.0)
+    resume_from: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    await_decisions: Mapped[bool] = mapped_column(Boolean, default=False)
+    profile: Mapped[str | None] = mapped_column(String(40))
+    retry_budget: Mapped[int | None] = mapped_column(Integer)
+    estimated_runtime_seconds: Mapped[float | None] = mapped_column(Float)
+    state: Mapped[str] = mapped_column(String(20))
+    next_cycle: Mapped[int] = mapped_column(Integer, default=0)
+    # Submissions of next_cycle so far; a resume after a failed cycle submits it again.
+    tries: Mapped[int] = mapped_column(Integer, default=0)
+    current_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    last_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    pause_reason: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    idempotency_key: Mapped[str] = mapped_column(String(200))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    actor: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    created_by: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    created_at: Mapped[datetime] = _ts()
+    updated_at: Mapped[datetime] = _ts()
+    __table_args__ = (
+        CheckConstraint(_states_check(ScheduleState), name="schedule_state_known"),
+        CheckConstraint("pace in (" + ",".join(f"'{m.value}'" for m in Pace) + ")",
+                        name="schedule_pace_known"),
+        UniqueConstraint("organization_id", "idempotency_key", name="schedules_idempotency"),
+        Index("schedules_work", "state", "updated_at"),
+    )
+
+
+class ScheduleCycle(Base):
+    """One submission of one cycle of a schedule."""
+
+    __tablename__ = "schedule_cycles"
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    schedule_id: Mapped[str] = mapped_column(ForeignKey("schedules.id"), index=True)
+    number: Mapped[int] = mapped_column(Integer)
+    attempt: Mapped[int] = mapped_column(Integer)
+    cycle_end: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), unique=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id"))
+    resumed_from: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    created_at: Mapped[datetime] = _ts()
+    __table_args__ = (UniqueConstraint("schedule_id", "number", "attempt"),)
+
+
+class SetpointProposal(Base):
+    """A proposed setting of a schedule's model; only a person decides it."""
+
+    __tablename__ = "setpoint_proposals"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    schedule_id: Mapped[str] = mapped_column(ForeignKey("schedules.id"))
+    state: Mapped[str] = mapped_column(String(20))
+    link: Mapped[str] = mapped_column(String(200))
+    property: Mapped[str] = mapped_column(String(80))
+    value: Mapped[float] = mapped_column(Float)
+    # Model times: the engine's UTC wall clock, stored without a zone.
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=False))
+    issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    proposed_by: Mapped[dict[str, Any]] = mapped_column(JSONB)
+    note: Mapped[str | None] = mapped_column(Text)
+    decided_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
+    decided_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+    decision_note: Mapped[str | None] = mapped_column(Text)
+    applied_run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"))
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=False))
+    created_at: Mapped[datetime] = _ts()
+    __table_args__ = (
+        CheckConstraint(_states_check(ProposalState), name="proposal_state_known"),
+        # A decision is a person's: approved, rejected and applied proposals name one.
+        CheckConstraint("state in ('PROPOSED','SUPERSEDED') or decided_by is not null",
+                        name="proposal_decided_by_a_person"),
+        CheckConstraint("state <> 'APPLIED' or applied_run_id is not null",
+                        name="proposal_applied_by_a_run"),
+        Index("proposals_schedule", "schedule_id", "state", "effective_from"),
+    )
 
 
 class AuditRecord(Base):

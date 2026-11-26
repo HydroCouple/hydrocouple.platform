@@ -1,0 +1,433 @@
+"""Studies: a registered evaluation function that callers drive with batches.
+
+A study fixes what one evaluation means (a revision, an approved evaluator
+workflow and its parameters, the decision dimensions, the objectives, a seed and
+a failed-candidate policy) and how much may be spent (an evaluation budget and a
+pool size). Callers submit batches of candidate vectors and read back their
+costs, so any ask/tell optimizer can drive it.
+
+Evaluations run on an evaluator pool: task jobs that keep the engine loaded and
+lease chunks of a batch. A chunk lease is fenced by its lease number.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import math
+from datetime import datetime
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .manifests import sha256_of
+
+
+class _Model(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class StudyState(str, Enum):
+    PENDING_APPROVAL = "PENDING_APPROVAL"
+    OPEN = "OPEN"  # accepts batches
+    CLOSED = "CLOSED"  # accepts no more batches; finishing the queued ones
+    COMPLETED = "COMPLETED"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+    REJECTED = "REJECTED"
+
+
+STUDY_TERMINAL = frozenset({StudyState.COMPLETED, StudyState.CANCELLED, StudyState.FAILED,
+                            StudyState.REJECTED})
+
+METRICS = ("Every value the evaluator reports for a candidate, objective or not, as reported "
+           "(not negated for a maximized objective); null when it was not finite")
+
+
+class BatchState(str, Enum):
+    QUEUED = "QUEUED"
+    DONE = "DONE"
+    CANCELLED = "CANCELLED"
+    FAILED = "FAILED"
+
+
+class FailurePolicy(str, Enum):
+    """What a failed candidate does, as in ``openswmm_gymnasium.optimize``.
+
+    ``fail`` ends the study; ``penalty`` records the candidate with every
+    objective set to the study's ``failure_penalty`` and continues.
+    """
+
+    FAIL = "fail"
+    PENALTY = "penalty"
+
+
+class Dimension(_Model):
+    """One component of the decision vector."""
+
+    label: str = Field(min_length=1, max_length=200)
+    low: float
+    high: float
+    choices: list[float] | None = Field(
+        default=None, min_length=2, max_length=10_000,
+        description="For a discrete component, the values it chooses from: the component "
+                    "lies in [0, len(choices)] and its integer part (at most the last index) "
+                    "picks the value an evaluation records")
+
+    @model_validator(mode="after")
+    def _bounds(self) -> Dimension:
+        if not (math.isfinite(self.low) and math.isfinite(self.high)) or self.low > self.high:
+            raise ValueError(f"dimension {self.label}: bounds must be finite with low <= high")
+        if self.choices is not None:
+            if not all(math.isfinite(c) for c in self.choices) or \
+                    len(set(self.choices)) != len(self.choices):
+                raise ValueError(f"dimension {self.label}: choices must be finite and distinct")
+            if (self.low, self.high) != (0.0, float(len(self.choices))):
+                raise ValueError(f"dimension {self.label}: a discrete component lies in "
+                                 f"[0, {len(self.choices)}]")
+        return self
+
+
+class Objective(_Model):
+    name: str = Field(min_length=1, max_length=200)
+    direction: Literal["minimize", "maximize"]
+
+
+class StudyCreate(_Model):
+    project_id: str
+    session_id: str | None = None
+    revision_id: str
+    target_id: str
+    workflow: str = "gym.evaluate"
+    workflow_version: str = "1"
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    dimensions: list[Dimension] = Field(min_length=1, max_length=10_000)
+    objectives: list[Objective] = Field(min_length=1, max_length=32)
+    seed: int | None = None
+    on_failure: FailurePolicy = FailurePolicy.FAIL
+    failure_penalty: float = 1e12
+    max_evaluations: int = Field(ge=1, le=1_000_000)
+    pool_size: int = Field(default=1, ge=1, le=256)
+    profile: str | None = None
+    tool_call_id: str | None = None
+    estimate_id: str | None = Field(
+        default=None, description="The estimate this study follows; required above the "
+                                  "organization's require_estimate_above_evaluations")
+    estimated_seconds_per_evaluation: float | None = Field(
+        default=None, gt=0, description="For the estimate's spend only; never limits a run")
+
+    @model_validator(mode="after")
+    def _unique_names(self) -> StudyCreate:
+        names = [o.name for o in self.objectives]
+        if len(set(names)) != len(names):
+            raise ValueError("objective names must be unique")
+        if not math.isfinite(self.failure_penalty):
+            raise ValueError("failure_penalty must be finite")
+        return self
+
+
+STUDY_MANIFEST_SCHEMA = "hydrocouple.platform/study-manifest/1"
+
+
+class StudyEvaluation(_Model):
+    """One evaluated candidate, as ``evaluations.jsonl`` records it."""
+
+    evaluation: int = Field(ge=1)
+    decisions: dict[str, list[float]]
+    objectives: dict[str, float]
+    metrics: dict[str, float | None] = Field(default_factory=dict, description=METRICS)
+    steps: int = 0
+    failed: bool = False
+    error: str | None = None
+
+
+class StudyDimension(Dimension):
+    """One component of the decision vector, with the decision key it belongs to."""
+
+    key: str = Field(min_length=1, max_length=200,
+                     description="The key of the component's values in an evaluation's decisions")
+
+
+class StudyDefinition(_Model):
+    """What a study evaluates and how it searches: the same wherever it runs."""
+
+    workflow: str
+    workflow_version: str
+    model_inputs: dict[str, str] = Field(
+        description="Package path to sha256 of every packaged file except composition.json, "
+                    "which records when it was packaged")
+    env_config: dict[str, Any] = Field(
+        description="The evaluator env config; its model path is the path in the package")
+    dimensions: list[StudyDimension] = Field(
+        description="Components in decision-vector order; each evaluation's decisions[key] lists "
+                    "its key's components in this order")
+    objectives: list[Objective]
+    optimization: dict[str, Any]
+    seed: int | None = None
+
+
+class StudyManifest(_Model):
+    """A study's definition, every evaluation and its result, written by a local run and by
+    a platform run alike. Two executions of one study differ only in ``runtime``."""
+
+    schema_: Literal["hydrocouple.platform/study-manifest/1"] = Field(
+        default=STUDY_MANIFEST_SCHEMA, alias="schema")
+    definition: StudyDefinition
+    evaluations: list[StudyEvaluation]
+    result: dict[str, Any] = Field(description="Pareto set or best candidate, and counts")
+    runtime: dict[str, Any] = Field(
+        description="Where and how it ran: ids, hosts, workers, timings")
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def comparable(self) -> dict[str, Any]:
+        """Everything but ``runtime``: what two executions of the study must agree on."""
+        return self.model_dump(mode="json", by_alias=True, exclude={"runtime"})
+
+
+STUDY_LINEAGE_SCHEMA = "hydrocouple.platform/study-lineage/1"
+
+
+class LineageBatch(_Model):
+    batch_id: str
+    sequence: int
+    offset: int = Field(description="evaluations submitted before this batch")
+    size: int
+    candidates_sha256: str
+    state: str
+    actor: dict[str, Any] | None = Field(
+        description="who proposed the candidates: the person and, for an AI agent session, "
+                    "the agent and its tool call; absent for batches submitted before it was kept")
+
+
+class LineageObject(_Model):
+    key: str
+    sha256: str
+    size: int
+
+
+class LineageChunk(_Model):
+    chunk_id: str
+    batch_id: str
+    start: int = Field(description="first candidate of the batch in this chunk, from 0")
+    stop: int
+    state: str
+    lease_number: int
+    deliveries: int
+    attempt_id: str | None = Field(description="the pool task attempt that completed it")
+    object: LineageObject | None = Field(description="the uploaded evaluation records")
+
+
+class LineageAttempt(_Model):
+    attempt_id: str
+    number: int
+    state: str
+    failure_class: str | None
+    attempt_manifest_sha256: str | None
+
+
+class LineageTask(_Model):
+    job_id: str
+    state: str
+    attempts: list[LineageAttempt]
+
+
+class StudyLineage(_Model):
+    """Where a study's evaluations came from: every batch with who proposed it, every chunk
+    with the object holding its records, and every pool task attempt with its attempt
+    manifest checksum. ``manifest_sha256`` is the checksum of everything else."""
+
+    schema_: Literal["hydrocouple.platform/study-lineage/1"] = Field(
+        default=STUDY_LINEAGE_SCHEMA, alias="schema")
+    study_id: str
+    run_id: str
+    state: str
+    organization_id: str
+    project_id: str
+    revision_id: str
+    revision_manifest_sha256: str
+    target_id: str
+    actor: dict[str, Any] = Field(description="who created the study")
+    definition: dict[str, Any]
+    workload: dict[str, Any]
+    runtime: dict[str, Any]
+    max_evaluations: int
+    pool_size: int
+    counts: dict[str, int]
+    batches: list[LineageBatch]
+    chunks: list[LineageChunk]
+    pool: list[LineageTask]
+    manifest_sha256: str
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def check_evaluations(self, evaluations: list[dict[str, Any]], read) -> list[str]:
+        """Problems tracing ``evaluations`` (records as the study lists them) to their chunks.
+
+        ``read(key)`` returns an object's bytes. Every record must name a chunk of this
+        study and its batch, carry the attempt, object checksum and proposer that
+        lineage records, and fall in the chunk's range; every object named must hash to
+        its recorded sha256. An empty list means every record traces to a checked object.
+        """
+        problems: list[str] = []
+        body = self.model_dump(mode="json", by_alias=True, exclude={"manifest_sha256"})
+        if sha256_of(body) != self.manifest_sha256:
+            problems.append("the lineage document does not match its manifest_sha256")
+        chunks = {c.chunk_id: c for c in self.chunks}
+        batches = {b.batch_id: b for b in self.batches}
+        hashed: dict[str, bool] = {}
+        for rec in evaluations:
+            n = rec.get("evaluation")
+            chunk = chunks.get(rec.get("chunk_id"))
+            batch = batches.get(rec.get("batch_id"))
+            if chunk is None or batch is None or chunk.batch_id != batch.batch_id:
+                problems.append(f"evaluation {n} names no chunk and batch of this study")
+                continue
+            if not batch.offset + chunk.start < n <= batch.offset + chunk.stop:
+                problems.append(f"evaluation {n} is outside chunk {chunk.chunk_id}")
+            if chunk.object is None:
+                problems.append(f"chunk {chunk.chunk_id} of evaluation {n} has no object")
+                continue
+            if rec.get("attempt_id") != chunk.attempt_id:
+                problems.append(f"evaluation {n} names attempt {rec.get('attempt_id')}, "
+                                f"lineage {chunk.attempt_id}")
+            if rec.get("object_sha256") != chunk.object.sha256:
+                problems.append(f"evaluation {n} names an object checksum lineage does not")
+            if rec.get("proposed_by") != batch.actor:
+                problems.append(f"evaluation {n} names a proposer its batch does not")
+            key = chunk.object.key
+            if key not in hashed:
+                hashed[key] = hashlib.sha256(read(key)).hexdigest() == chunk.object.sha256
+            if not hashed[key]:
+                problems.append(f"object {key} of evaluation {n} does not match its sha256")
+        return problems
+
+
+class BatchSubmit(_Model):
+    candidates: list[list[float]] = Field(min_length=1, max_length=10_000)
+
+
+class EvaluationRecord(_Model):
+    """One candidate's outcome as the study reports it.
+
+    ``costs`` are minimized (a ``maximize`` objective is negated by the
+    evaluator), in the order of the study's objectives. A failed candidate under
+    the ``penalty`` policy carries the penalty costs and ``failed=True``; under
+    ``fail`` it carries no costs.
+    """
+
+    evaluation: int = Field(ge=1, description="1-based position in the study, in submission order")
+    costs: list[float] | None
+    metrics: dict[str, float | None] = Field(default_factory=dict, description=METRICS)
+    failed: bool = False
+    error: str | None = None
+    steps: int = 0
+
+
+class BatchView(_Model):
+    batch_id: str
+    study_id: str
+    sequence: int
+    first_evaluation: int = Field(ge=1, description="the evaluation number of its first candidate")
+    state: BatchState
+    size: int
+    completed: int
+    results: list[EvaluationRecord] | None = None
+    next_action: str | None = None
+
+
+class StudyView(_Model):
+    study_id: str
+    run_id: str
+    project_id: str
+    session_id: str | None
+    revision_id: str
+    target_id: str
+    state: StudyState
+    workflow: str
+    workflow_version: str
+    objectives: list[Objective]
+    dimensions: int
+    seed: int | None
+    on_failure: FailurePolicy
+    max_evaluations: int
+    evaluations_submitted: int
+    evaluations_completed: int
+    evaluations_failed: int
+    batches: int
+    pool_size: int
+    pool: list[dict[str, Any]] = Field(default_factory=list)
+    approval_id: str | None = None
+    failure: dict[str, Any] | None = None
+    created_at: datetime
+    updated_at: datetime
+    next_action: str | None = None
+
+
+# -- agent protocol -----------------------------------------------------------------
+
+
+class EvaluationResult(_Model):
+    """One candidate as an evaluator reports it."""
+
+    costs: list[float] | None = None
+    metrics: dict[str, float | None] = Field(default_factory=dict, max_length=1000,
+                                             description=METRICS)
+    steps: int = Field(default=0, ge=0)
+    error: str | None = Field(default=None, max_length=2000)
+
+    @model_validator(mode="after")
+    def _one_outcome(self) -> EvaluationResult:
+        if (self.costs is None) == (self.error is None):
+            raise ValueError("an evaluation result has costs or an error, not both or neither")
+        if self.costs is not None and not all(math.isfinite(c) for c in self.costs):
+            raise ValueError("costs must be finite")
+        if not all(v is None or math.isfinite(v) for v in self.metrics.values()):
+            raise ValueError("metrics must be finite or null")
+        return self
+
+
+class EvaluationLeaseRequest(_Model):
+    attempt_id: str
+    fencing_token: int = Field(ge=1)
+    wait_seconds: float = Field(default=0, ge=0, le=30)
+
+
+class EvaluationChunk(_Model):
+    chunk_id: str
+    lease_number: int = Field(ge=1)
+    study_id: str
+    batch_id: str
+    start: int = Field(ge=0, description="index of the first candidate within its batch")
+    first_evaluation: int = Field(ge=1)
+    candidates: list[list[float]]
+    lease_expires_at: datetime
+
+
+class EvaluationLeaseResponse(_Model):
+    chunk: EvaluationChunk | None = None
+    # True when this task should finish: the study ended, or it has been idle too long.
+    done: bool = False
+    poll_after_seconds: float = 1.0
+
+
+class ResultObject(_Model):
+    key: str
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    size: int = Field(ge=0)
+
+
+class EvaluationCompletion(_Model):
+    attempt_id: str
+    fencing_token: int = Field(ge=1)
+    chunk_id: str
+    lease_number: int = Field(ge=1)
+    results: list[EvaluationResult] = Field(min_length=1)
+    # The append-only evaluation records for this chunk, in the target's storage.
+    object: ResultObject
+
+
+class CompletionAck(_Model):
+    accepted: bool
+    # Why a completion was not accepted, e.g. the chunk was leased again.
+    reason: str | None = None

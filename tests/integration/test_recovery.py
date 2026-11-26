@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from hydrocouple_platform.contracts.agent import (
@@ -286,6 +288,21 @@ def test_a_manifest_listing_an_artifact_twice_fails_cleanly(world):
                                     "attempt_manifest_sha256": sha256_of(manifest)})
     ack = world.services.agent_complete(world.target_id, held.attempt_token, bad)
     assert ack.job_state == "FAILED" and state(world, job).failure["class"] == "unknown"
+
+
+def test_a_manifest_naming_another_actor_is_not_published(world):
+    job = start(world, retry_budget=0).job_id
+    held = lease(world)
+    result = fake_outputs(world, held)
+    manifest = json.loads(json.dumps(result.attempt_manifest))
+    manifest["provenance"]["actor"]["human_subject"] = "mallory"
+    from hydrocouple_platform.contracts.manifests import sha256_of
+
+    bad = result.model_copy(update={"attempt_manifest": manifest,
+                                    "attempt_manifest_sha256": sha256_of(manifest)})
+    ack = world.services.agent_complete(world.target_id, held.attempt_token, bad)
+    assert ack.job_state == "FAILED"
+    assert "provenance actor" in json.dumps(state(world, job).failure)
 
 
 def test_default_and_explicit_retry_budget_are_the_same_request(world):

@@ -11,7 +11,8 @@
         "STALE_ATTEMPT",
         "CAPABILITY_UNSUPPORTED",
         "NOT_READY",
-        "TARGET_REVOKED"
+        "TARGET_REVOKED",
+        "ESTIMATE_REQUIRED"
       ],
       "title": "ErrorCode",
       "type": "string"

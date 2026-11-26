@@ -13,9 +13,19 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..config import ControlPlaneSettings
 from ..contracts.agent import GrantMode
 from ..contracts.errors import ErrorCode, PlatformError
+from ..contracts.jobs import Actor
 from ..contracts.states import JOB_TERMINAL, JobState, job_can
 from ..db import transaction
-from ..db.models import AuditRecord, GrantRequestRow, Job, Membership, User, new_id, utcnow
+from ..db.models import (
+    AgentSession,
+    AuditRecord,
+    GrantRequestRow,
+    Job,
+    Membership,
+    User,
+    new_id,
+    utcnow,
+)
 from .auth import ROLE_RANK, AttemptTokens, Principal, VerifiedClaims
 
 T = TypeVar("T")
@@ -129,6 +139,27 @@ class ServiceBase:
             )
         )
 
+    @staticmethod
+    def actor_of(s: Session, principal: Principal, tool_call_id: str | None = None,
+                 session: AgentSession | None = None) -> Actor:
+        """Who asked: the person and, for an AI agent session, the agent and its tool call.
+
+        ``tool_call_id`` is a request body's own field, where the contract has one; the
+        ``X-HCP-Tool-Call-Id`` header arrives on the principal. They must agree."""
+        call = tool_call(principal, tool_call_id)
+        if principal.agent_session_id is None:
+            return Actor(human_subject=principal.subject, tool_call_id=call)
+        if session is None:
+            session = s.get(AgentSession, principal.agent_session_id)
+        return Actor(
+            human_subject=principal.subject, agent_session_id=session.id,
+            agent_client=session.client_name, agent_client_version=session.client_version,
+            model=session.model, conversation_ref=session.conversation_ref, tool_call_id=call)
+
+    def audit_actor(self, s: Session, principal: Principal) -> dict[str, Any]:
+        """The actor chain an audit record keeps, with the person's user id."""
+        return {**self.actor_of(s, principal).model_dump(mode="json"),
+                "user_id": principal.user_id}
 
     # -- shared state helpers ---------------------------------------------------
 
@@ -160,3 +191,14 @@ class ServiceBase:
 
 def human_actor(principal: Principal) -> dict[str, Any]:
     return {"human_subject": principal.subject, "user_id": principal.user_id}
+
+
+def tool_call(principal: Principal, given: str | None = None) -> str | None:
+    """The tool call behind a request: a body's ``tool_call_id`` or the request header."""
+    if given and principal.tool_call_id and given != principal.tool_call_id:
+        raise PlatformError(
+            ErrorCode.VALIDATION_ERROR,
+            f"the request names two tool calls: {given!r} in its body and "
+            f"{principal.tool_call_id!r} in X-HCP-Tool-Call-Id",
+            next_action="Send one tool call id, or the same one in both places.")
+    return given or principal.tool_call_id

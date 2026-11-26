@@ -1,0 +1,33 @@
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: hydrocouple-default
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: hydrocouple
+spec:
+  namespaceSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: hydrocouple
+  queueingStrategy: BestEffortFIFO
+  resourceGroups:
+    - coveredResources: ["cpu", "memory", "ephemeral-storage"]
+      flavors:
+        - name: hydrocouple-default
+          resources:
+            - name: cpu
+              nominalQuota: 64
+            - name: memory
+              nominalQuota: 256Gi
+            - name: ephemeral-storage
+              nominalQuota: 1Ti
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: hydrocouple
+  namespace: hydrocouple  # the agent's namespace
+spec:
+  clusterQueue: hydrocouple

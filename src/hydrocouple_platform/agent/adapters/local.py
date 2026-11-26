@@ -21,6 +21,19 @@ from ...contracts.states import AttemptState
 from ...runner import EVENT_PREFIX
 from . import Observation
 
+# The agent's own settings and credentials. A runner gets none of them.
+_AGENT_ENV_PREFIX = "HCP_"
+
+
+def runner_environment(threads: int, env: dict[str, str] | None,
+                       secrets: dict[str, str] | None) -> dict[str, str]:
+    base = {k: v for k, v in os.environ.items() if not k.startswith(_AGENT_ENV_PREFIX)}
+    base.update(env or {})
+    base.update(OMP_NUM_THREADS=str(threads), PYTHONUNBUFFERED="1")
+    if secrets:
+        base["HCP_RUNNER_SECRETS_STDIN"] = "1"
+    return base
+
 
 def _memory_gib() -> float:
     try:
@@ -46,29 +59,42 @@ class LocalPoolAdapter:
     name = "local-pool"
 
     def __init__(self, work_root: str | Path, slots: int = 1, python: str = sys.executable,
-                 grace_seconds: float = 10.0, keep_workdirs: bool = False):
+                 grace_seconds: float = 10.0, keep_workdirs: bool = False,
+                 composition_host=None):
         self.work_root = Path(work_root).resolve()
         self.work_root.mkdir(parents=True, exist_ok=True)
         self.slots, self.python, self.grace = slots, python, grace_seconds
         self.keep_workdirs = keep_workdirs
+        # HydroCoupleComposer and the engine component directories (CompositionHostConfig).
+        self.composition_host = composition_host
         self._procs: dict[str, _Proc] = {}
+
+    def _host_environment(self) -> dict[str, str]:
+        h = self.composition_host
+        if h is None or not Path(h.executable).is_file():
+            return {}
+        return {"HYDROCOUPLE_COMPOSER": str(Path(h.executable).resolve()),
+                "HYDROCOUPLE_COMPONENT_PATH": os.pathsep.join(
+                    str(Path(p).resolve()) for p in h.component_paths)}
 
     def capabilities(self) -> AdapterCapabilities:
         return AdapterCapabilities(
             adapter=self.name, family="local",
-            job_classes=[JobClass.SINGLE, JobClass.ANALYSIS],
+            job_classes=[JobClass.SINGLE, JobClass.EVALUATOR_POOL, JobClass.ANALYSIS],
             has_runtime_cap=False, max_task_seconds=None, max_parallel_tasks=1,
             max_cpu=float(os.cpu_count() or 1), max_memory_gib=round(_memory_gib(), 2),
             gpu=[], scratch_gib=round(shutil.disk_usage(self.work_root).free / 1024**3, 2),
             scratch_in_memory=False, interruption_tolerant=False, provider_retries=0,
             idempotent_submit=True, status_integration="direct", runs_images=False,
+            composition_hosts=["hydrocouple.composer"] if self._host_environment() else [],
         )
 
     def free_slots(self) -> int:
         running = sum(1 for p in self._procs.values() if p.process.poll() is None)
         return max(self.slots - running, 0)
 
-    def submit(self, lease: LeaseGrant, store_uri: str) -> str:
+    def submit(self, lease: LeaseGrant, store_uri: str, env: dict[str, str] | None = None,
+               secrets: dict[str, str] | None = None) -> str:
         handle = lease.attempt_id
         if handle in self._procs:  # idempotent: the same attempt is never started twice
             return handle
@@ -76,16 +102,24 @@ class LocalPoolAdapter:
         workdir.mkdir(parents=True, exist_ok=True)
         spec_path = workdir / "spec.json"
         spec_path.write_text(lease.spec.model_dump_json(indent=2), encoding="utf-8")
-        env = dict(os.environ, OMP_NUM_THREADS=str(lease.spec.runtime.threads),
-                   PYTHONUNBUFFERED="1")
+        env = runner_environment(lease.spec.runtime.threads, {**self._host_environment(),
+                                                              **(env or {})}, secrets)
         stderr = open(workdir / "runner.stderr.log", "wb")
         process = subprocess.Popen(
             [self.python, "-m", "hydrocouple_platform.runner", "--spec", str(spec_path),
              "--attempt-id", lease.attempt_id, "--attempt-number", str(lease.fencing_token),
              "--store", store_uri, "--workdir", str(workdir)],
+            stdin=subprocess.PIPE if secrets else subprocess.DEVNULL,
             stdout=subprocess.PIPE, stderr=stderr, env=env, start_new_session=True,
         )
         stderr.close()
+        if secrets:  # through a pipe, so they are not in the runner's environment
+            assert process.stdin is not None
+            try:
+                process.stdin.write(json.dumps(secrets).encode("utf-8"))
+                process.stdin.close()
+            except BrokenPipeError:
+                pass  # the runner already exited; inspect reports it
         proc = _Proc(lease=lease, process=process, workdir=workdir, started=time.monotonic())
         proc.reader = threading.Thread(target=self._read, args=(proc,), daemon=True)
         proc.reader.start()

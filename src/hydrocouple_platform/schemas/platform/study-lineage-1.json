@@ -1,0 +1,355 @@
+{
+  "$defs": {
+    "LineageAttempt": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "attempt_manifest_sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Attempt Manifest Sha256"
+        },
+        "failure_class": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Failure Class"
+        },
+        "number": {
+          "title": "Number",
+          "type": "integer"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "attempt_id",
+        "number",
+        "state",
+        "failure_class",
+        "attempt_manifest_sha256"
+      ],
+      "title": "LineageAttempt",
+      "type": "object"
+    },
+    "LineageBatch": {
+      "additionalProperties": false,
+      "properties": {
+        "actor": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "who proposed the candidates: the person and, for an AI agent session, the agent and its tool call; absent for batches submitted before it was kept",
+          "title": "Actor"
+        },
+        "batch_id": {
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "candidates_sha256": {
+          "title": "Candidates Sha256",
+          "type": "string"
+        },
+        "offset": {
+          "description": "evaluations submitted before this batch",
+          "title": "Offset",
+          "type": "integer"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "integer"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "batch_id",
+        "sequence",
+        "offset",
+        "size",
+        "candidates_sha256",
+        "state",
+        "actor"
+      ],
+      "title": "LineageBatch",
+      "type": "object"
+    },
+    "LineageChunk": {
+      "additionalProperties": false,
+      "properties": {
+        "attempt_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the pool task attempt that completed it",
+          "title": "Attempt Id"
+        },
+        "batch_id": {
+          "title": "Batch Id",
+          "type": "string"
+        },
+        "chunk_id": {
+          "title": "Chunk Id",
+          "type": "string"
+        },
+        "deliveries": {
+          "title": "Deliveries",
+          "type": "integer"
+        },
+        "lease_number": {
+          "title": "Lease Number",
+          "type": "integer"
+        },
+        "object": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LineageObject"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "the uploaded evaluation records"
+        },
+        "start": {
+          "description": "first candidate of the batch in this chunk, from 0",
+          "title": "Start",
+          "type": "integer"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        },
+        "stop": {
+          "title": "Stop",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "chunk_id",
+        "batch_id",
+        "start",
+        "stop",
+        "state",
+        "lease_number",
+        "deliveries",
+        "attempt_id",
+        "object"
+      ],
+      "title": "LineageChunk",
+      "type": "object"
+    },
+    "LineageObject": {
+      "additionalProperties": false,
+      "properties": {
+        "key": {
+          "title": "Key",
+          "type": "string"
+        },
+        "sha256": {
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "sha256",
+        "size"
+      ],
+      "title": "LineageObject",
+      "type": "object"
+    },
+    "LineageTask": {
+      "additionalProperties": false,
+      "properties": {
+        "attempts": {
+          "items": {
+            "$ref": "#/$defs/LineageAttempt"
+          },
+          "title": "Attempts",
+          "type": "array"
+        },
+        "job_id": {
+          "title": "Job Id",
+          "type": "string"
+        },
+        "state": {
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "job_id",
+        "state",
+        "attempts"
+      ],
+      "title": "LineageTask",
+      "type": "object"
+    }
+  },
+  "$id": "https://hydrocouple.org/schema/platform/study-lineage-1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "Where a study's evaluations came from: every batch with who proposed it, every chunk\nwith the object holding its records, and every pool task attempt with its attempt\nmanifest checksum. ``manifest_sha256`` is the checksum of everything else.",
+  "properties": {
+    "actor": {
+      "additionalProperties": true,
+      "description": "who created the study",
+      "title": "Actor",
+      "type": "object"
+    },
+    "batches": {
+      "items": {
+        "$ref": "#/$defs/LineageBatch"
+      },
+      "title": "Batches",
+      "type": "array"
+    },
+    "chunks": {
+      "items": {
+        "$ref": "#/$defs/LineageChunk"
+      },
+      "title": "Chunks",
+      "type": "array"
+    },
+    "counts": {
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "title": "Counts",
+      "type": "object"
+    },
+    "definition": {
+      "additionalProperties": true,
+      "title": "Definition",
+      "type": "object"
+    },
+    "manifest_sha256": {
+      "title": "Manifest Sha256",
+      "type": "string"
+    },
+    "max_evaluations": {
+      "title": "Max Evaluations",
+      "type": "integer"
+    },
+    "organization_id": {
+      "title": "Organization Id",
+      "type": "string"
+    },
+    "pool": {
+      "items": {
+        "$ref": "#/$defs/LineageTask"
+      },
+      "title": "Pool",
+      "type": "array"
+    },
+    "pool_size": {
+      "title": "Pool Size",
+      "type": "integer"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    },
+    "revision_id": {
+      "title": "Revision Id",
+      "type": "string"
+    },
+    "revision_manifest_sha256": {
+      "title": "Revision Manifest Sha256",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "runtime": {
+      "additionalProperties": true,
+      "title": "Runtime",
+      "type": "object"
+    },
+    "schema": {
+      "const": "hydrocouple.platform/study-lineage/1",
+      "default": "hydrocouple.platform/study-lineage/1",
+      "title": "Schema",
+      "type": "string"
+    },
+    "state": {
+      "title": "State",
+      "type": "string"
+    },
+    "study_id": {
+      "title": "Study Id",
+      "type": "string"
+    },
+    "target_id": {
+      "title": "Target Id",
+      "type": "string"
+    },
+    "workload": {
+      "additionalProperties": true,
+      "title": "Workload",
+      "type": "object"
+    }
+  },
+  "required": [
+    "study_id",
+    "run_id",
+    "state",
+    "organization_id",
+    "project_id",
+    "revision_id",
+    "revision_manifest_sha256",
+    "target_id",
+    "actor",
+    "definition",
+    "workload",
+    "runtime",
+    "max_evaluations",
+    "pool_size",
+    "counts",
+    "batches",
+    "chunks",
+    "pool",
+    "manifest_sha256"
+  ],
+  "title": "StudyLineage",
+  "type": "object"
+}

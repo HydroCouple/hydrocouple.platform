@@ -1,0 +1,8 @@
+# Kueue queueing for the agent's Jobs: a ResourceFlavor, a ClusterQueue holding the
+# target's quota, and the LocalQueue the agent labels its Jobs with (agent.json:
+# "queue_name": "hydrocouple"). Install Kueue itself first (v0.20 or later serves
+# kueue.x-k8s.io/v1beta2). Set the quota to what this target may use.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - queues.yaml
