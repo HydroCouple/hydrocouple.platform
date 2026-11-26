@@ -8,6 +8,7 @@ failure policies, budgets, approvals, isolation) without the engine.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import random
 import threading
@@ -31,7 +32,8 @@ from hydrocouple_platform.contracts.studies import (
     ResultObject,
     StudyCreate,
 )
-from hydrocouple_platform.db.models import EvaluationChunk, Job
+from hydrocouple_platform.db import transaction
+from hydrocouple_platform.db.models import AuditRecord, EvaluationChunk, Job, StudyBatch
 from hydrocouple_platform.services.studies import MAX_DELIVERIES, pareto_indices
 from hydrocouple_platform.storage import sha256_file
 from world import local_capabilities, make_world, ready_revision
@@ -856,3 +858,38 @@ def test_a_studys_run_points_to_the_study_for_results(setup):
         world.services.get_results(world.admin, study.run_id)
     assert pointed.value.code == ErrorCode.NOT_READY
     assert study.study_id in pointed.value.body.next_action
+
+
+def test_an_agents_batches_close_and_cancel_record_its_tool_calls(setup):
+    world, revision = setup
+    svc = world.services
+    session = svc.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-7",
+        budget=Budget(max_evaluations=100)))
+    agent = svc.session_principal(session["agent_session_token"])
+
+    def call(tool_call_id):  # what the X-HCP-Tool-Call-Id header gives the services
+        return dataclasses.replace(agent, tool_call_id=tool_call_id)
+
+    study = create(world, revision, principal=call("tc_create"), max_evaluations=40)
+    batch = svc.submit_batch(call("tc_batch"), study.study_id,
+                             BatchSubmit(candidates=candidates(3)), "batch-key-0001")
+    svc.close_study(call("tc_close"), study.study_id)
+    other = create(world, revision, key="study-key-0002", principal=call("tc_create_2"),
+                   max_evaluations=10)
+    svc.cancel_study(call("tc_cancel"), other.study_id)
+
+    expected = {("study.create", study.study_id): "tc_create",
+                ("study.batch", batch.batch_id): "tc_batch",
+                ("study.close", study.study_id): "tc_close",
+                ("study.cancel", other.study_id): "tc_cancel"}
+    with transaction(svc._factory) as s:
+        rows = {(r.action, r.object_id): r.actor for r in s.scalars(select(AuditRecord).where(
+            AuditRecord.action.in_([action for action, _ in expected])))}
+        proposed = s.get(StudyBatch, batch.batch_id).actor
+    for key, tool_call_id in expected.items():
+        assert rows[key]["tool_call_id"] == tool_call_id, key
+        assert rows[key]["agent_session_id"] == session["agent_session_id"], key
+        assert rows[key]["conversation_ref"] == "conv-7" and rows[key]["human_subject"] == "alice"
+    assert proposed["tool_call_id"] == "tc_batch"
+    assert proposed["agent_session_id"] == session["agent_session_id"]

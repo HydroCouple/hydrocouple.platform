@@ -26,7 +26,7 @@ from ..db.models import (
     new_id,
 )
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
 
 
 def revision_prefix(organization_id: str, project_id: str, revision_id: str) -> str:
@@ -109,8 +109,9 @@ class RevisionServices(ServiceBase):
                  for f in manifest.files],
                 revision_id=rev_id,
             )
-            self.audit(s, project.organization_id, human_actor(principal), "revision.create",
-                       "revision", rev_id, {"manifest_sha256": manifest.digest()})
+            self.audit(s, project.organization_id, self.audit_actor(s, principal),
+                       "revision.create", "revision", rev_id,
+                       {"manifest_sha256": manifest.digest()})
             return {"revision_id": rev_id, "state": "UPLOADING", "grant_request_id": grant,
                     "storage_prefix": prefix, "manifest_sha256": manifest.digest()}
 

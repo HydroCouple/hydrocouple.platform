@@ -11,6 +11,7 @@ FastAPI must evaluate the dependency aliases defined inside ``create_app``.
 
 
 import asyncio
+import dataclasses
 import time
 from typing import Annotated, Any
 
@@ -124,14 +125,27 @@ def create_app(
                          details={"errors": exc.errors()})
         return JSONResponse(body.model_dump(mode="json"), status_code=422)
 
-    def principal(authorization: Annotated[str | None, Header()] = None) -> Principal:
-        """A person, or an AI agent session acting for a person under its budget."""
+    def principal(
+        authorization: Annotated[str | None, Header()] = None,
+        tool_call: Annotated[str | None, Header(alias="X-HCP-Tool-Call-Id")] = None,
+    ) -> Principal:
+        """A person, or an AI agent session acting for a person under its budget.
+
+        An agent names the tool call behind each request in ``X-HCP-Tool-Call-Id``; the
+        services record it in the actor chain of whatever the request changes."""
         token = _bearer(authorization)
         if token.startswith(AGENT_CREDENTIAL_PREFIX):
             raise PlatformError(ErrorCode.FORBIDDEN, "agent credentials cannot call client routes")
         if token.startswith(SESSION_CREDENTIAL_PREFIX):
-            return svc.session_principal(token)
-        return svc.principal_for(verifier.verify(token))
+            caller = svc.session_principal(token)
+        else:
+            caller = svc.principal_for(verifier.verify(token))
+        if tool_call is None:
+            return caller
+        if not 1 <= len(tool_call) <= 200 or not tool_call.isprintable():
+            raise PlatformError(ErrorCode.VALIDATION_ERROR,
+                                "X-HCP-Tool-Call-Id must be 1 to 200 printable characters")
+        return dataclasses.replace(caller, tool_call_id=tool_call)
 
     def _agent_token(authorization: str | None) -> str:
         token = _bearer(authorization)

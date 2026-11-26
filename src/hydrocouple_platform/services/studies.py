@@ -31,7 +31,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from ..contracts.errors import ErrorCode, PlatformError
-from ..contracts.jobs import Actor, FailureClass, JobClass, JobSpec
+from ..contracts.jobs import FailureClass, JobClass, JobSpec
 from ..contracts.manifests import check_safe_path, sha256_of
 from ..contracts.requests import Budget, RunRequest
 from ..contracts.states import JOB_TERMINAL, JobState
@@ -65,7 +65,7 @@ from ..db.models import (
 )
 from ..db.models import EvaluationChunk as ChunkRow
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
 
 # A batch is split into about two chunks per pool task, at most this many candidates each.
 MAX_CHUNK = 32
@@ -209,16 +209,11 @@ class StudyServices(ServiceBase):
                     next_action="Fix the findings, then create the study again.")
 
             session, reasons = None, []
-            actor = Actor(human_subject=principal.subject, tool_call_id=req.tool_call_id)
             if principal.agent_session_id:
                 session = self._agent_session(  # type: ignore[attr-defined]
                     s, principal, principal.agent_session_id, checked.project, lock=True)
                 reasons = self._study_budget_reasons(s, session, checked, req)
-                actor = Actor(
-                    human_subject=principal.subject, agent_session_id=session.id,
-                    agent_client=session.client_name, agent_client_version=session.client_version,
-                    model=session.model, conversation_ref=session.conversation_ref,
-                    tool_call_id=req.tool_call_id)
+            actor = self.actor_of(s, principal, req.tool_call_id, session)
 
             study_id, run_id = new_id("std"), new_id("run")
             parameters = {**checked.parameters, "study": {
@@ -267,6 +262,7 @@ class StudyServices(ServiceBase):
                     id=new_id("apr"), organization_id=org_id, project_id=checked.project.id,
                     run_id=run_id, job_id=None, study_id=study_id,
                     agent_session_id=session.id if session else None, reasons=reasons,
+                    actor=actor.model_dump(mode="json"),
                     expires_at=self.now() + timedelta(seconds=self.settings.approval_ttl_seconds)))
             if session is not None:
                 session.runs_submitted += 1
@@ -310,14 +306,18 @@ class StudyServices(ServiceBase):
                     f"the batch has {len(body.candidates)} candidates; the study's evaluation "
                     f"budget allows {left} more",
                     next_action="Submit a smaller batch or close the study.")
+            # Who proposed these candidates: the evaluations they become trace back to it.
+            actor = self.audit_actor(s, principal)
             batch = StudyBatch(
                 id=new_id("bat"), study_id=study.id, organization_id=study.organization_id,
                 sequence=study.batches_submitted + 1, offset=study.evaluations_submitted,
                 size=len(body.candidates), idempotency_key=idempotency_key,
                 request_hash=request_hash, candidates=body.candidates,
-                state=BatchState.QUEUED.value)
+                state=BatchState.QUEUED.value, actor=actor)
             s.add(batch)
             s.flush()
+            self.audit(s, study.organization_id, actor, "study.batch", "batch", batch.id,
+                       {"study_id": study.id, "sequence": batch.sequence, "size": batch.size})
             for start, stop in chunk_ranges(batch.size, study.pool_size):
                 s.add(ChunkRow(id=new_id("chk"), study_id=study.id, batch_id=batch.id,
                                organization_id=study.organization_id,
@@ -388,8 +388,8 @@ class StudyServices(ServiceBase):
             if study.state == StudyState.OPEN.value:
                 study.state = StudyState.CLOSED.value
                 study.updated_at = self.now()
-                self.audit(s, study.organization_id, human_actor(principal), "study.close",
-                           "study", study.id)
+                self.audit(s, study.organization_id, self.audit_actor(s, principal),
+                           "study.close", "study", study.id)
                 self._maybe_complete(s, study)
             return self._view(s, study)
 
@@ -398,8 +398,8 @@ class StudyServices(ServiceBase):
             study = self.owned(s, Study, study_id, principal, "editor", lock=True)
             if StudyState(study.state) not in STUDY_TERMINAL:
                 self._end_study(s, study, StudyState.CANCELLED, {"reason": "cancelled by user"})
-                self.audit(s, study.organization_id, human_actor(principal), "study.cancel",
-                           "study", study.id)
+                self.audit(s, study.organization_id, self.audit_actor(s, principal),
+                           "study.cancel", "study", study.id)
         self._stop_pool(study_id)
         return self._view_by_id(study_id)
 

@@ -18,7 +18,7 @@ from ..contracts.states import JOB_HELD, JOB_TERMINAL, JobState
 from ..contracts.studies import STUDY_TERMINAL, StudyState
 from ..db.models import Artifact, Attempt, ComputeTarget, Deletion, Job, Run, Study, new_id
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
 
 _D = DeletionState
 WAITING = (_D.REQUESTED.value, _D.WAITING_FOR_WRITERS.value, _D.BLOCKED.value)
@@ -55,7 +55,7 @@ class DeletionServices(ServiceBase):
                 target_id=run.target_id, study_id=study_id, state=_D.REQUESTED.value,
                 prefixes=[f"runs/{run.organization_id}/{run.project_id}/{run.id}/"],
                 requested_by=principal.user_id,
-                actor={**human_actor(principal), "agent_session_id": principal.agent_session_id},
+                actor=self.audit_actor(s, principal),
                 requested_at=now, updated_at=now)
             s.add(deletion)
             self.audit(s, run.organization_id, deletion.actor, "run.delete", "run", run.id,

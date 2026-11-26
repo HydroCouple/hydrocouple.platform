@@ -251,6 +251,7 @@ class Provenance(_Model):
             described = {"hcp:client": self.actor.agent_client,
                          "hcp:clientVersion": self.actor.agent_client_version,
                          "hcp:model": self.actor.model,
+                         "hcp:conversation": self.actor.conversation_ref,
                          "hcp:toolCall": self.actor.tool_call_id}
             doc["agent"][session] = {k: v for k, v in described.items() if v is not None}
             doc["wasAssociatedWith"]["w1"] = {"prov:activity": act, "prov:agent": session}

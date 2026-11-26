@@ -41,6 +41,8 @@ class Principal:
     roles: dict[str, str] = field(default_factory=dict)
     # Set when an AI agent acts for this person through an agent session.
     agent_session_id: str | None = None
+    # The agent's tool call behind this request, from the X-HCP-Tool-Call-Id header.
+    tool_call_id: str | None = None
 
     def role_in(self, organization_id: str) -> str | None:
         return self.roles.get(organization_id)

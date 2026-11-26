@@ -320,6 +320,8 @@ class Approval(Base):
     study_id: Mapped[str | None] = mapped_column(
         ForeignKey("studies.id", name="approvals_study_fk"))
     agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    # The actor chain of the request waiting for approval; absent before migration 0005.
+    actor: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     reasons: Mapped[list[Any]] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(String(20), default="PENDING")
     requested_at: Mapped[datetime] = _ts()
@@ -382,6 +384,8 @@ class StudyBatch(Base):
     idempotency_key: Mapped[str] = mapped_column(String(200))
     request_hash: Mapped[str] = mapped_column(String(64))
     candidates: Mapped[list[Any]] = mapped_column(JSONB)
+    # Who proposed the candidates (person, agent session, tool call); absent before 0005.
+    actor: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     state: Mapped[str] = mapped_column(String(20))
     completed: Mapped[int] = mapped_column(Integer, default=0)
     results: Mapped[list[Any] | None] = mapped_column(JSONB)

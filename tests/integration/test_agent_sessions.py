@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import dataclasses
+
 import pytest
 from sqlalchemy import select
 
@@ -15,7 +17,7 @@ from hydrocouple_platform.contracts.requests import (
     TargetCreate,
 )
 from hydrocouple_platform.db import transaction
-from hydrocouple_platform.db.models import AuditRecord
+from hydrocouple_platform.db.models import Approval, AuditRecord
 from world import make_world, ready_revision
 
 pytestmark = pytest.mark.postgres
@@ -162,3 +164,41 @@ def test_a_session_credential_works_over_http_and_carries_the_budget(
         with pytest.raises(PlatformError) as err:
             bot.resolve_approval(accepted["approval_id"], True)
         assert err.value.code == ErrorCode.FORBIDDEN
+
+
+def test_a_tool_call_in_the_header_and_in_the_body_must_agree(world):
+    revision = ready_revision(world)
+    _, bot = agent(world)
+    header = dataclasses.replace(bot, tool_call_id="toolu_header")
+    with pytest.raises(PlatformError) as two:
+        world.services.submit_run(
+            header, world.run_request(revision["revision_id"], tool_call_id="toolu_body"),
+            "key-two-calls")
+    assert two.value.code == ErrorCode.VALIDATION_ERROR
+    world.services.submit_run(header, world.run_request(revision["revision_id"]), "key-header")
+    world.services.dispatch()
+    assert world.poll().leases[0].spec.actor.tool_call_id == "toolu_header"
+
+
+def test_cancellations_and_approvals_keep_the_agents_chain(world):
+    revision = ready_revision(world)
+    row, bot = agent(world, max_runs=1)
+    first = world.services.submit_run(dataclasses.replace(bot, tool_call_id="toolu_run_1"),
+                                      world.run_request(revision["revision_id"]), "key-chain-1")
+    held = world.services.submit_run(dataclasses.replace(bot, tool_call_id="toolu_run_2"),
+                                     world.run_request(revision["revision_id"]), "key-chain-2")
+    assert held.status == "PENDING_APPROVAL"
+    world.services.resolve_approval(world.admin, held.approval_id, True, "fine")
+    world.services.cancel_job(dataclasses.replace(bot, tool_call_id="toolu_cancel"),
+                              first.job_id)
+    with transaction(world.services._factory) as s:
+        assert s.get(Approval, held.approval_id).actor["tool_call_id"] == "toolu_run_2"
+        decided = s.scalar(select(AuditRecord).where(AuditRecord.action == "approval.approved"))
+        cancelled = s.scalar(select(AuditRecord).where(AuditRecord.action == "job.cancel"))
+    # A person decides; the record keeps both who decided and whose request it was.
+    assert decided.actor["human_subject"] == "alice" and decided.actor["agent_session_id"] is None
+    assert decided.details["requested_by"]["tool_call_id"] == "toolu_run_2"
+    assert decided.details["requested_by"]["agent_session_id"] == row["agent_session_id"]
+    assert cancelled.actor["tool_call_id"] == "toolu_cancel"
+    assert cancelled.actor["agent_session_id"] == row["agent_session_id"]
+    assert cancelled.actor["model"] == "claude-opus-5-5"

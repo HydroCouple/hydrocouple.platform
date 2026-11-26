@@ -352,6 +352,10 @@ class AgentServices(ServiceBase):
         for key, value in expected.items():
             if getattr(prov, key) != value:
                 problems.append(f"provenance {key} is {getattr(prov, key)!r}, expected {value!r}")
+        if prov.actor != spec.actor:
+            # The manifest names who asked for the work; it must be who the platform recorded.
+            problems.append(f"provenance actor {prov.actor.model_dump(exclude_none=True)} "
+                            f"is not the job's {spec.actor.model_dump(exclude_none=True)}")
         if manifest.status != "completed":
             problems.append(f"the run manifest status is {manifest.status}")
         paths = {a.path: a for a in manifest.artifacts}

@@ -46,7 +46,7 @@ from ..db.models import (
 )
 from ..workflows import Workflow, get_workflow
 from .auth import Principal
-from .base import ServiceBase, human_actor
+from .base import ServiceBase
 
 PROFILES: dict[str, dict[str, float]] = {
     "cpu-small": {"cpu": 1, "memory_gib": 2, "scratch_gib": 4},
@@ -328,17 +328,11 @@ class RunServices(ServiceBase):
 
             session = None
             reasons: list[str] = []
-            actor = Actor(human_subject=principal.subject, tool_call_id=req.tool_call_id)
             if principal.agent_session_id:
                 session = self._agent_session(s, principal, principal.agent_session_id,
                                               checked.project, lock=True)
                 reasons = self._budget_reasons(s, session, checked)
-                actor = Actor(
-                    human_subject=principal.subject, agent_session_id=session.id,
-                    agent_client=session.client_name, agent_client_version=session.client_version,
-                    model=session.model, conversation_ref=session.conversation_ref,
-                    tool_call_id=req.tool_call_id,
-                )
+            actor = self.actor_of(s, principal, req.tool_call_id, session)
 
             run_id, job_id = new_id("run"), new_id("job")
             spec = self._spec(job_id, run_id, checked.project, checked.revision, checked.target,
@@ -367,6 +361,7 @@ class RunServices(ServiceBase):
                     id=new_id("apr"), organization_id=org_id, project_id=checked.project.id,
                     run_id=run_id, job_id=job_id,
                     agent_session_id=session.id if session else None, reasons=reasons,
+                    actor=actor.model_dump(mode="json"),
                     expires_at=self.now() + timedelta(seconds=self.settings.approval_ttl_seconds),
                 )
                 s.add(approval)
@@ -416,9 +411,10 @@ class RunServices(ServiceBase):
             if approval.study_id is not None:
                 study_state = self.resolve_study_approval(  # type: ignore[attr-defined]
                     s, approval, approve, note)
-                self.audit(s, approval.organization_id, human_actor(principal),
+                self.audit(s, approval.organization_id, self.audit_actor(s, principal),
                            "approval." + approval.state.lower(), "approval", approval.id,
-                           {"study_id": approval.study_id, "note": note})
+                           {"study_id": approval.study_id, "note": note,
+                            "requested_by": approval.actor})
                 return {"approval_id": approval.id, "state": approval.state,
                         "study_state": study_state}
             job = s.get(Job, approval.job_id, with_for_update=True)
@@ -429,9 +425,9 @@ class RunServices(ServiceBase):
                 else:
                     self._set_state(job, JobState.REJECTED, failure={"reason": "approval rejected",
                                                                        "note": note})
-            self.audit(s, approval.organization_id, human_actor(principal),
+            self.audit(s, approval.organization_id, self.audit_actor(s, principal),
                        "approval." + approval.state.lower(), "approval", approval.id,
-                       {"job_id": job.id, "note": note})
+                       {"job_id": job.id, "note": note, "requested_by": approval.actor})
             return {"approval_id": approval.id, "state": approval.state, "job_state": job.state}
 
     def list_approvals(self, principal: Principal, project_id: str) -> list[dict]:
@@ -456,8 +452,8 @@ class RunServices(ServiceBase):
                 job.updated_at = self.now()
             else:
                 self._set_state(job, JobState.CANCELLED, failure={"reason": "cancelled by user"})
-            self.audit(s, job.organization_id, human_actor(principal), "job.cancel", "job", job.id,
-                       {"state_at_request": state.value})
+            self.audit(s, job.organization_id, self.audit_actor(s, principal), "job.cancel",
+                       "job", job.id, {"state_at_request": state.value})
             return {"job_id": job.id, "state": job.state,
                     "cancel_requested": job.cancel_requested}
 
