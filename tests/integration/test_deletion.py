@@ -180,7 +180,7 @@ def test_an_agent_session_deletes_only_runs_it_submitted(world):
     adapter = ScriptedAdapter(world)
     accepted, _, _ = published_run(world, adapter, agent_for(world, adapter))
     session = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code"))
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test"))
     agent = svc.session_principal(session["agent_session_token"])
     with pytest.raises(PlatformError) as refused:
         svc.delete_run(agent, accepted.run_id)

@@ -35,7 +35,9 @@ class AgentSessionCreate(_Model):
     client_name: str
     client_version: str | None = None
     model: str | None = None
-    conversation_ref: str | None = None
+    # The person's conversation with the AI client, so its work traces back to what was
+    # asked; required since M7 (sessions opened before keep none).
+    conversation_ref: str = Field(min_length=1, max_length=200)
     budget: Budget = Field(default_factory=Budget)
     expires_in_seconds: int = Field(default=8 * 3600, gt=0, le=30 * 86400)
 

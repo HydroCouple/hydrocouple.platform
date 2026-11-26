@@ -575,7 +575,7 @@ def test_gate_upload_run_disconnect_reconnect_inspect_approve_delete(install, ma
 
         # Approve: an AI agent session beyond its budget waits for a person.
         session = client.create_agent_session(
-            project_id=world.project_id, client_name="claude-code",
+            project_id=world.project_id, client_name="claude-code", conversation_ref="conv-k8s",
             budget=Budget(max_runs=0).model_dump())
     with _client(install, session["agent_session_token"]) as agent_client:
         pending = agent_client.submit_run(RunRequest(
@@ -710,7 +710,7 @@ def test_gate_revocation_drains_in_flight_work_and_claims_nothing_new(install, m
                              workflow="swmm.simulation", workflow_version="1",
                              target_id=world.target_id)
         session = client.create_agent_session(
-            project_id=world.project_id, client_name="claude-code",
+            project_id=world.project_id, client_name="claude-code", conversation_ref="conv-k8s",
             budget=Budget(max_runs=0).model_dump())
         with _client(install, session["agent_session_token"]) as agent_client:
             # Waiting for a person, so it can only become leasable after revocation.

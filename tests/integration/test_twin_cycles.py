@@ -336,7 +336,8 @@ def agent_principal(world):
     from hydrocouple_platform.contracts.requests import AgentSessionCreate, Budget
 
     session = world.services.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code", budget=Budget()))
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
+        budget=Budget()))
     return world.services.session_principal(session["agent_session_token"])
 
 

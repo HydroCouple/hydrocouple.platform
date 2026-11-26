@@ -91,7 +91,7 @@ def test_agents_cannot_administer_or_spawn_sessions(world):
         lambda: world.services.revoke_target(bot, world.target_id),
         lambda: world.services.add_member(bot, world.org_id, "iss", "mallory", "admin"),
         lambda: world.services.create_agent_session(bot, AgentSessionCreate(
-            project_id=world.project_id, client_name="x")),
+            project_id=world.project_id, client_name="x", conversation_ref="conv-x")),
     ):
         with pytest.raises(PlatformError) as err:
             call()
@@ -243,3 +243,18 @@ def test_a_session_reads_its_budget_over_http_and_cannot_set_policy(
             "target_id": world.target_id, "estimate_id": estimate["estimate_id"]},
             idempotency_key="key-view-3")
         assert accepted["status"] == "ACCEPTED"
+
+
+def test_a_session_names_the_conversation_it_works_for(services, artifact_dir, server, make_token):
+    world = make_world(services, artifact_dir)
+    with PlatformClient(server, make_token("alice")) as person:
+        for missing in ({}, {"conversation_ref": ""}):
+            with pytest.raises(PlatformError) as refused:
+                person.create_agent_session(
+                    project_id=world.project_id, client_name="claude-code", **missing)
+            assert refused.value.code == ErrorCode.VALIDATION_ERROR
+        row = person.create_agent_session(project_id=world.project_id, client_name="claude-code",
+                                          conversation_ref="conv-9")
+    principal = services.session_principal(row["agent_session_token"])
+    with transaction(services._factory) as s:
+        assert services.actor_of(s, principal).conversation_ref == "conv-9"

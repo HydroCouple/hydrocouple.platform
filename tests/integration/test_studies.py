@@ -469,7 +469,7 @@ def test_an_agent_session_study_beyond_its_budget_waits_for_a_person(setup):
     world, revision = setup
     svc = world.services
     session = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code",
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
         budget=Budget(max_evaluations=100)))
     agent = svc.session_principal(session["agent_session_token"])
     within = create(world, revision, key="study-key-0001", principal=agent, max_evaluations=60)
@@ -643,7 +643,8 @@ def test_the_migrations_build_exactly_the_models(database_url):
 def session_principal(world, budget: Budget):
     svc = world.services
     session = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code", budget=budget))
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
+        budget=budget))
     return svc.session_principal(session["agent_session_token"])
 
 
@@ -908,7 +909,7 @@ def test_every_evaluation_traces_to_its_chunk_object_and_its_proposer(setup, art
     world, revision = setup
     svc = world.services
     session = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code",
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
         budget=Budget(max_evaluations=100)))
     proposer = dataclasses.replace(svc.session_principal(session["agent_session_token"]),
                                    tool_call_id="tc_propose")
@@ -939,7 +940,7 @@ def test_a_tool_call_view_of_the_client_names_its_call_on_every_request(setup, s
 
     world, revision = setup
     session = world.services.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code",
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
         budget=Budget(max_evaluations=100)))
     with PlatformClient(server, session["agent_session_token"]) as client:
         call = client.for_tool_call("tc_http")
@@ -1036,7 +1037,7 @@ def test_a_spend_cap_holds_a_study_estimated_beyond_it_for_a_person(setup):
     svc.set_target_prices(world.admin, world.target_id,
                           PriceTable(currency="USD", per_hour={profile: 0.6}))
     session = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code",
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
         budget=Budget(max_estimated_spend=0.3, max_evaluations=1000)))
     agent = svc.session_principal(session["agent_session_token"])
     body = study_body(world, revision, estimated_seconds_per_evaluation=30)  # 0.2 USD each
@@ -1057,7 +1058,7 @@ def test_a_session_past_its_wall_time_stops_its_work_and_takes_no_more(setup, cl
     world, revision = setup
     svc = world.services
     timed = svc.create_agent_session(world.admin, AgentSessionCreate(
-        project_id=world.project_id, client_name="claude-code",
+        project_id=world.project_id, client_name="claude-code", conversation_ref="conv-test",
         budget=Budget(max_wall_time_seconds=60)))
     agent = svc.session_principal(timed["agent_session_token"])
     untimed = session_principal(world, Budget())
