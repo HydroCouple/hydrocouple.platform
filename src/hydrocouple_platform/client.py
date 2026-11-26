@@ -7,6 +7,7 @@ flag and ``next_action`` whether they call in process or over HTTPS.
 
 from __future__ import annotations
 
+import copy
 import shutil
 import time
 import uuid
@@ -31,9 +32,25 @@ class PlatformClient:
         headers = {"Authorization": f"Bearer {token}"}
         self._http = httpx.Client(base_url=base_url, headers=headers, transport=transport,
                                   timeout=timeout)
+        self._headers: dict[str, str] = {}
+        self._owns_http = True
+
+    def for_tool_call(self, tool_call_id: str | None) -> PlatformClient:
+        """This client, naming ``tool_call_id`` (an MCP tool call) on every request it makes.
+
+        The view shares this client's connection; closing it leaves the connection open.
+        The platform records the call in the actor chain of whatever a request changes.
+        """
+        if not tool_call_id:
+            return self
+        view = copy.copy(self)
+        view._headers = {**self._headers, "X-HCP-Tool-Call-Id": tool_call_id}
+        view._owns_http = False
+        return view
 
     def close(self) -> None:
-        self._http.close()
+        if self._owns_http:
+            self._http.close()
 
     def __enter__(self) -> PlatformClient:
         return self
@@ -42,6 +59,8 @@ class PlatformClient:
         self.close()
 
     def _call(self, method: str, path: str, **kw) -> Any:
+        if self._headers:
+            kw["headers"] = {**self._headers, **(kw.get("headers") or {})}
         response = self._http.request(method, path, **kw)
         if response.status_code >= 400:
             raise _error(response)

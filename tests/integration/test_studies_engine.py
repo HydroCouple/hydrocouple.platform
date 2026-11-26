@@ -26,10 +26,11 @@ from hydrocouple_platform.agent import Agent, AgentClient
 from hydrocouple_platform.agent.adapters.local import LocalPoolAdapter
 from hydrocouple_platform.client import PlatformClient
 from hydrocouple_platform.contracts.jobs import EgressPolicy
+from hydrocouple_platform.contracts.studies import StudyLineage
 from hydrocouple_platform.db.models import EvaluationChunk
 from hydrocouple_platform.gym import run_platform_study
 from hydrocouple_platform.packaging import package_swmm_model
-from world import make_world
+from world import make_world, read_from
 
 pytestmark = [pytest.mark.postgres, pytest.mark.engine]
 
@@ -277,6 +278,14 @@ def test_an_alternatives_study_has_the_same_manifest_locally_and_on_the_platform
     assert local.runtime["executor"] == "local" and remote.runtime["executor"] == "platform"
     assert remote.runtime["revision_id"] == revision["revision_id"]
     assert set(local.definition.model_inputs) == {"model/model.inp"}
+    # The platform run keeps where every evaluation came from, and it checks out.
+    lineage = StudyLineage.model_validate_json(
+        (artifact_dir / "platform" / "study-lineage.json").read_text())
+    records = [json.loads(line) for line in
+               (artifact_dir / "platform" / "evaluation-lineage.jsonl").read_text().splitlines()]
+    assert [r["evaluation"] for r in records] == [1, 2, 3]
+    assert remote.runtime["lineage_manifest_sha256"] == lineage.manifest_sha256
+    assert lineage.check_evaluations(records, read_from(world.store, artifact_dir)) == []
 
 
 def test_a_latin_hypercube_study_draws_the_same_design_locally_and_on_the_platform(

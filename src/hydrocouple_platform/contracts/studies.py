@@ -12,12 +12,15 @@ lease chunks of a batch. A chunk lease is fenced by its lease number.
 
 from __future__ import annotations
 
+import hashlib
 import math
 from datetime import datetime
 from enum import Enum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from .manifests import sha256_of
 
 
 class _Model(BaseModel):
@@ -175,6 +178,124 @@ class StudyManifest(_Model):
     def comparable(self) -> dict[str, Any]:
         """Everything but ``runtime``: what two executions of the study must agree on."""
         return self.model_dump(mode="json", by_alias=True, exclude={"runtime"})
+
+
+STUDY_LINEAGE_SCHEMA = "hydrocouple.platform/study-lineage/1"
+
+
+class LineageBatch(_Model):
+    batch_id: str
+    sequence: int
+    offset: int = Field(description="evaluations submitted before this batch")
+    size: int
+    candidates_sha256: str
+    state: str
+    actor: dict[str, Any] | None = Field(
+        description="who proposed the candidates: the person and, for an AI agent session, "
+                    "the agent and its tool call; absent for batches submitted before it was kept")
+
+
+class LineageObject(_Model):
+    key: str
+    sha256: str
+    size: int
+
+
+class LineageChunk(_Model):
+    chunk_id: str
+    batch_id: str
+    start: int = Field(description="first candidate of the batch in this chunk, from 0")
+    stop: int
+    state: str
+    lease_number: int
+    deliveries: int
+    attempt_id: str | None = Field(description="the pool task attempt that completed it")
+    object: LineageObject | None = Field(description="the uploaded evaluation records")
+
+
+class LineageAttempt(_Model):
+    attempt_id: str
+    number: int
+    state: str
+    failure_class: str | None
+    attempt_manifest_sha256: str | None
+
+
+class LineageTask(_Model):
+    job_id: str
+    state: str
+    attempts: list[LineageAttempt]
+
+
+class StudyLineage(_Model):
+    """Where a study's evaluations came from: every batch with who proposed it, every chunk
+    with the object holding its records, and every pool task attempt with its attempt
+    manifest checksum. ``manifest_sha256`` is the checksum of everything else."""
+
+    schema_: Literal["hydrocouple.platform/study-lineage/1"] = Field(
+        default=STUDY_LINEAGE_SCHEMA, alias="schema")
+    study_id: str
+    run_id: str
+    state: str
+    organization_id: str
+    project_id: str
+    revision_id: str
+    revision_manifest_sha256: str
+    target_id: str
+    actor: dict[str, Any] = Field(description="who created the study")
+    definition: dict[str, Any]
+    workload: dict[str, Any]
+    runtime: dict[str, Any]
+    max_evaluations: int
+    pool_size: int
+    counts: dict[str, int]
+    batches: list[LineageBatch]
+    chunks: list[LineageChunk]
+    pool: list[LineageTask]
+    manifest_sha256: str
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    def check_evaluations(self, evaluations: list[dict[str, Any]], read) -> list[str]:
+        """Problems tracing ``evaluations`` (records as the study lists them) to their chunks.
+
+        ``read(key)`` returns an object's bytes. Every record must name a chunk of this
+        study and its batch, carry the attempt, object checksum and proposer that
+        lineage records, and fall in the chunk's range; every object named must hash to
+        its recorded sha256. An empty list means every record traces to a checked object.
+        """
+        problems: list[str] = []
+        body = self.model_dump(mode="json", by_alias=True, exclude={"manifest_sha256"})
+        if sha256_of(body) != self.manifest_sha256:
+            problems.append("the lineage document does not match its manifest_sha256")
+        chunks = {c.chunk_id: c for c in self.chunks}
+        batches = {b.batch_id: b for b in self.batches}
+        hashed: dict[str, bool] = {}
+        for rec in evaluations:
+            n = rec.get("evaluation")
+            chunk = chunks.get(rec.get("chunk_id"))
+            batch = batches.get(rec.get("batch_id"))
+            if chunk is None or batch is None or chunk.batch_id != batch.batch_id:
+                problems.append(f"evaluation {n} names no chunk and batch of this study")
+                continue
+            if not batch.offset + chunk.start < n <= batch.offset + chunk.stop:
+                problems.append(f"evaluation {n} is outside chunk {chunk.chunk_id}")
+            if chunk.object is None:
+                problems.append(f"chunk {chunk.chunk_id} of evaluation {n} has no object")
+                continue
+            if rec.get("attempt_id") != chunk.attempt_id:
+                problems.append(f"evaluation {n} names attempt {rec.get('attempt_id')}, "
+                                f"lineage {chunk.attempt_id}")
+            if rec.get("object_sha256") != chunk.object.sha256:
+                problems.append(f"evaluation {n} names an object checksum lineage does not")
+            if rec.get("proposed_by") != batch.actor:
+                problems.append(f"evaluation {n} names a proposer its batch does not")
+            key = chunk.object.key
+            if key not in hashed:
+                hashed[key] = hashlib.sha256(read(key)).hexdigest() == chunk.object.sha256
+            if not hashed[key]:
+                problems.append(f"object {key} of evaluation {n} does not match its sha256")
+        return problems
 
 
 class BatchSubmit(_Model):

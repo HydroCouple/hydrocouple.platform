@@ -31,12 +31,13 @@ from hydrocouple_platform.contracts.studies import (
     Objective,
     ResultObject,
     StudyCreate,
+    StudyLineage,
 )
 from hydrocouple_platform.db import transaction
 from hydrocouple_platform.db.models import AuditRecord, EvaluationChunk, Job, StudyBatch
 from hydrocouple_platform.services.studies import MAX_DELIVERIES, pareto_indices
 from hydrocouple_platform.storage import sha256_file
-from world import local_capabilities, make_world, ready_revision
+from world import local_capabilities, make_world, read_from, ready_revision
 
 pytestmark = pytest.mark.postgres
 
@@ -893,3 +894,57 @@ def test_an_agents_batches_close_and_cancel_record_its_tool_calls(setup):
         assert rows[key]["conversation_ref"] == "conv-7" and rows[key]["human_subject"] == "alice"
     assert proposed["tool_call_id"] == "tc_batch"
     assert proposed["agent_session_id"] == session["agent_session_id"]
+
+
+
+def test_every_evaluation_traces_to_its_chunk_object_and_its_proposer(setup, artifact_dir):
+    world, revision = setup
+    svc = world.services
+    session = svc.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code",
+        budget=Budget(max_evaluations=100)))
+    proposer = dataclasses.replace(svc.session_principal(session["agent_session_token"]),
+                                   tool_call_id="tc_propose")
+    study = create(world, revision, principal=proposer, max_evaluations=20)
+    svc.submit_batch(proposer, study.study_id, BatchSubmit(candidates=candidates(5)),
+                     "batch-key-0001")
+    for task in start_tasks(world):
+        task.drain()
+    lineage = StudyLineage.model_validate(svc.study_manifest(world.admin, study.study_id))
+    records = svc.list_evaluations(world.admin, study.study_id)["evaluations"]
+    assert len(records) == 5
+    assert {r["proposed_by"]["tool_call_id"] for r in records} == {"tc_propose"}
+    read = read_from(world.store, artifact_dir)
+    assert lineage.check_evaluations(records, read) == []
+
+    wrong = [dict(records[0], attempt_id="att_other"), *records[1:]]
+    assert any("names attempt" in p for p in lineage.check_evaluations(wrong, read))
+    chunk = next(c for c in lineage.chunks if c.object is not None)
+    tampered = artifact_dir / "tampered.jsonl"
+    world.store.get_file(chunk.object.key, tampered)
+    tampered.write_bytes(tampered.read_bytes().replace(b"1", b"2", 1))
+    world.store.put_file(chunk.object.key, tampered)
+    assert any("does not match its sha256" in p for p in lineage.check_evaluations(records, read))
+
+
+def test_a_tool_call_view_of_the_client_names_its_call_on_every_request(setup, server):
+    from hydrocouple_platform.client import PlatformClient
+
+    world, revision = setup
+    session = world.services.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code",
+        budget=Budget(max_evaluations=100)))
+    with PlatformClient(server, session["agent_session_token"]) as client:
+        call = client.for_tool_call("tc_http")
+        study = call.create_study(StudyCreate(
+            project_id=world.project_id, revision_id=revision["revision_id"],
+            target_id=world.target_id, parameters={"env_config": env_config()},
+            dimensions=DIMS, objectives=OBJECTIVES, max_evaluations=10), "http-study-0002")
+        batch = call.submit_batch(study["study_id"], candidates(2), "http-batch-0003")
+        call.close()  # a view leaves the shared connection open
+        assert client.cancel_study(study["study_id"])["state"] == "CANCELLED"
+    with transaction(world.services._factory) as s:
+        calls = {r.action: r.actor.get("tool_call_id") for r in s.scalars(
+            select(AuditRecord).where(AuditRecord.object_id.in_(
+                [study["study_id"], batch["batch_id"]])))}
+    assert calls == {"study.create": "tc_http", "study.batch": "tc_http", "study.cancel": None}

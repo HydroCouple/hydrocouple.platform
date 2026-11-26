@@ -36,6 +36,7 @@ from ..contracts.manifests import check_safe_path, sha256_of
 from ..contracts.requests import Budget, RunRequest
 from ..contracts.states import JOB_TERMINAL, JobState
 from ..contracts.studies import (
+    STUDY_LINEAGE_SCHEMA,
     STUDY_TERMINAL,
     BatchState,
     BatchSubmit,
@@ -49,6 +50,7 @@ from ..contracts.studies import (
     FailurePolicy,
     Objective,
     StudyCreate,
+    StudyLineage,
     StudyState,
     StudyView,
 )
@@ -852,7 +854,9 @@ class StudyServices(ServiceBase):
                                      "batch_id": batch.id, "batch_sequence": batch.sequence,
                                      "chunk_id": chunk.id, "lease_number": chunk.lease_number,
                                      "attempt_id": chunk.completed_attempt_id,
-                                     "object_key": chunk.object_key})
+                                     "object_key": chunk.object_key,
+                                     "object_sha256": chunk.object_sha256,
+                                     "proposed_by": batch.actor})
             last = page[-1]["evaluation"] if page else after
             # Complete: nothing later is listed or still to come, and the study takes no more.
             done = not stopped and StudyState(study.state) in STUDY_TERMINAL
@@ -896,7 +900,8 @@ class StudyServices(ServiceBase):
             definition = {k: v for k, v in study.definition.items() if k != "task_spec"}
             task = study.definition["task_spec"]
             batches = [{"batch_id": b.id, "sequence": b.sequence, "offset": b.offset,
-                        "size": b.size, "candidates_sha256": b.request_hash, "state": b.state}
+                        "size": b.size, "candidates_sha256": b.request_hash, "state": b.state,
+                        "actor": b.actor}
                        for b in s.scalars(select(StudyBatch).where(StudyBatch.study_id == study.id)
                                           .order_by(StudyBatch.sequence))]
             chunks = [{"chunk_id": c.id, "batch_id": c.batch_id, "start": c.start,
@@ -916,6 +921,7 @@ class StudyServices(ServiceBase):
                      "failure_class": a.failure_class, "attempt_manifest_sha256": a.manifest_sha256}
                     for a in attempts]})
             body = {
+                "schema": STUDY_LINEAGE_SCHEMA,
                 "study_id": study.id, "run_id": study.run_id, "state": study.state,
                 "organization_id": study.organization_id, "project_id": study.project_id,
                 "revision_id": study.revision_id,
@@ -928,7 +934,9 @@ class StudyServices(ServiceBase):
                            "failed": study.evaluations_failed},
                 "batches": batches, "chunks": chunks, "pool": pool,
             }
-            return {**body, "manifest_sha256": sha256_of(body)}
+            doc = {**body, "manifest_sha256": sha256_of(body)}
+            StudyLineage.model_validate(doc)  # the published study-lineage-1 schema
+            return doc
 
     def _view(self, s: Session, study: Study) -> StudyView:
         pool = [{"job_id": j.id, "state": j.state, "retired": j.retired_at is not None,

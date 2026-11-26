@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import random
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -138,12 +139,19 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
                        batch_size: int | None = None, idempotency_key: str | None = None,
                        should_stop: Callable[[], bool] = lambda: False,
                        on_evaluation: Callable[[dict[str, Any]], None] | None = None,
+                       tool_call_id: str | None = None,
                        ) -> dict[str, Any]:
     """Search an env config's space on the platform; return ``run_study``'s result payload.
 
     ``batch_size`` is the random and grid search batch (a MOEA's batch is its
     generation); it changes how candidates are grouped, never which are drawn.
     With a seed, Python's ``random`` is seeded too, because Platypus draws from it.
+
+    ``tool_call_id`` names the MCP tool call that started the search; every request
+    (the study, its batches, close or cancel) carries it into the platform's actor
+    chain. Beside ``evaluations.jsonl`` and ``study-manifest.json`` the run keeps the
+    platform's lineage (``study-lineage.json``) and each evaluation's record with its
+    chunk, attempt, object checksum and proposer (``evaluation-lineage.jsonl``).
     """
     from openswmm_gymnasium.optimize import (
         PLATYPUS_ALGORITHMS,
@@ -164,7 +172,8 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
     low, high = flat_bounds(dims)
     request = study_request(env_config, opt, project_id=project_id, revision_id=revision_id,
                             target_id=target_id, inp_path=inp_path, session_id=session_id,
-                            pool_size=pool_size, workers=workers)
+                            pool_size=pool_size, workers=workers, tool_call_id=tool_call_id)
+    client = client.for_tool_call(tool_call_id)
     study = client.create_study(request, idempotency_key)
     study_id = study["study_id"]
     pool = PlatformPool(client, study_id)
@@ -227,6 +236,11 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
 
     revision = client.get_revision(revision_id)
     lineage = client.study_manifest(study_id)
+    (output_dir / "study-lineage.json").write_text(json.dumps(lineage, indent=2) + "\n",
+                                                   encoding="utf-8")
+    with (output_dir / "evaluation-lineage.jsonl").open("w", encoding="utf-8") as fh:
+        for record in _platform_evaluations(client, study_id):
+            fh.write(json.dumps(record) + "\n")
     manifest.write_study_manifest(
         output_dir,
         manifest.study_definition(env_config, opt, dims,
@@ -234,5 +248,23 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
         evaluations, result,
         {"executor": "platform", "study_id": study_id, "run_id": lineage["run_id"],
          "revision_id": revision_id, "revision_manifest_sha256": revision["manifest_sha256"],
-         "target_id": target_id, "lineage_manifest_sha256": lineage["manifest_sha256"]})
+         "target_id": target_id, "lineage_manifest_sha256": lineage["manifest_sha256"],
+         "lineage": "study-lineage.json", "evaluation_lineage": "evaluation-lineage.jsonl"})
     return result
+
+
+def _platform_evaluations(client: PlatformClient, study_id: str,
+                          timeout: float = 60.0) -> list[dict[str, Any]]:
+    """Every evaluation record the platform lists for a closed study, in order."""
+    records: list[dict[str, Any]] = []
+    after, deadline = 0, time.monotonic() + timeout
+    while True:
+        page = client.study_evaluations(study_id, after=after, limit=2000)
+        records += page["evaluations"]
+        after = page["next_after"]
+        if page["complete"]:
+            return records
+        if not page["evaluations"]:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"study {study_id} did not finish listing its evaluations")
+            time.sleep(0.25)

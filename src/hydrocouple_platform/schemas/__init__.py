@@ -47,6 +47,7 @@ CONTRACTS = {
     "batch-submit-1.json": studies.BatchSubmit,
     "batch-view-1.json": studies.BatchView,
     "study-manifest-1.json": studies.StudyManifest,
+    "study-lineage-1.json": studies.StudyLineage,
     "agent-evaluation-lease-request-1.json": studies.EvaluationLeaseRequest,
     "agent-evaluation-lease-response-1.json": studies.EvaluationLeaseResponse,
     "agent-evaluation-completion-1.json": studies.EvaluationCompletion,
