@@ -140,6 +140,8 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
                        should_stop: Callable[[], bool] = lambda: False,
                        on_evaluation: Callable[[dict[str, Any]], None] | None = None,
                        tool_call_id: str | None = None,
+                       on_study: Callable[[dict[str, Any]], None] | None = None,
+                       study_options: dict[str, Any] | None = None,
                        ) -> dict[str, Any]:
     """Search an env config's space on the platform; return ``run_study``'s result payload.
 
@@ -149,7 +151,9 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
 
     ``tool_call_id`` names the MCP tool call that started the search; every request
     (the study, its batches, close or cancel) carries it into the platform's actor
-    chain. Beside ``evaluations.jsonl`` and ``study-manifest.json`` the run keeps the
+    chain. ``on_study`` receives the study's view as soon as the platform accepts it.
+    ``study_options`` sets other fields of the study request, such as ``estimate_id``.
+    Beside ``evaluations.jsonl`` and ``study-manifest.json`` the run keeps the
     platform's lineage (``study-lineage.json``) and each evaluation's record with its
     chunk, attempt, object checksum and proposer (``evaluation-lineage.jsonl``).
     """
@@ -173,9 +177,13 @@ def run_platform_study(env_config, opt, output_dir: str | Path, *, client: Platf
     request = study_request(env_config, opt, project_id=project_id, revision_id=revision_id,
                             target_id=target_id, inp_path=inp_path, session_id=session_id,
                             pool_size=pool_size, workers=workers, tool_call_id=tool_call_id)
+    if study_options:
+        request = StudyCreate.model_validate({**request.model_dump(), **study_options})
     client = client.for_tool_call(tool_call_id)
     study = client.create_study(request, idempotency_key)
     study_id = study["study_id"]
+    if on_study is not None:
+        on_study(study)
     pool = PlatformPool(client, study_id)
     if opt.seed is not None and opt.algorithm in PLATYPUS_ALGORITHMS:
         random.seed(opt.seed)  # just before the MOEA starts drawing from it
