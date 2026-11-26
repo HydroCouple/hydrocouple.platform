@@ -110,6 +110,11 @@ class StudyCreate(_Model):
     pool_size: int = Field(default=1, ge=1, le=256)
     profile: str | None = None
     tool_call_id: str | None = None
+    estimate_id: str | None = Field(
+        default=None, description="The estimate this study follows; required above the "
+                                  "organization's require_estimate_above_evaluations")
+    estimated_seconds_per_evaluation: float | None = Field(
+        default=None, gt=0, description="For the estimate's spend only; never limits a run")
 
     @model_validator(mode="after")
     def _unique_names(self) -> StudyCreate:

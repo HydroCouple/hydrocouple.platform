@@ -117,6 +117,45 @@
       "format": "date-time",
       "title": "Expires At",
       "type": "string"
+    },
+    "remaining": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "what the budget leaves of each; null where it sets no limit",
+      "title": "Remaining"
+    },
+    "used": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "number"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "runs submitted, evaluations reserved by its studies, attempts and pool tasks active, estimated spend committed",
+      "title": "Used"
     }
   },
   "required": [

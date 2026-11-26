@@ -93,6 +93,33 @@
       "title": "Dimensions",
       "type": "array"
     },
+    "estimate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "The estimate this study follows; required above the organization's require_estimate_above_evaluations",
+      "title": "Estimate Id"
+    },
+    "estimated_seconds_per_evaluation": {
+      "anyOf": [
+        {
+          "exclusiveMinimum": 0,
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "For the estimate's spend only; never limits a run",
+      "title": "Estimated Seconds Per Evaluation"
+    },
     "failure_penalty": {
       "default": 1000000000000.0,
       "title": "Failure Penalty",

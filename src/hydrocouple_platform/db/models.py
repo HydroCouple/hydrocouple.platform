@@ -59,6 +59,8 @@ class Organization(Base):
     __tablename__ = "organizations"
     id: Mapped[str] = mapped_column(String(40), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), unique=True)
+    # OrganizationPolicy: rules its admins set for every submission (absent: none).
+    policy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     created_at: Mapped[datetime] = _ts()
 
 
@@ -112,6 +114,8 @@ class ComputeTarget(Base):
     egress_policy: Mapped[str] = mapped_column(String(20))
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True)
     capabilities: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    # PriceTable: the price of an hour of each profile; absent, spend cannot be estimated.
+    price_table: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     agent_instance: Mapped[str | None] = mapped_column(String(128))
     agent_version: Mapped[str | None] = mapped_column(String(40))
     last_poll_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
@@ -171,9 +175,30 @@ class AgentSession(Base):
     budget: Mapped[dict[str, Any]] = mapped_column(JSONB)
     credential_hash: Mapped[str] = mapped_column(String(64), unique=True)
     runs_submitted: Mapped[int] = mapped_column(Integer, default=0)
+    # Estimated spend of every run and study the session submitted that had an estimate.
+    estimated_spend: Mapped[float] = mapped_column(Float, default=0.0)
     created_at: Mapped[datetime] = _ts()
     expires_at: Mapped[datetime] = _ts()
     revoked_at: Mapped[datetime | None] = _ts(nullable=True, default=False)
+
+
+class EstimateRow(Base):
+    """An estimate a later submission can name: what it priced, for whom, until when."""
+
+    __tablename__ = "estimates"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True)
+    organization_id: Mapped[str] = mapped_column(ForeignKey("organizations.id"), index=True)
+    project_id: Mapped[str] = mapped_column(ForeignKey("projects.id"))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    agent_session_id: Mapped[str | None] = mapped_column(ForeignKey("agent_sessions.id"))
+    kind: Mapped[str] = mapped_column(String(10))
+    request_hash: Mapped[str] = mapped_column(String(64))
+    evaluations: Mapped[int] = mapped_column(Integer)
+    estimated_spend: Mapped[float | None] = mapped_column(Float)
+    requires_approval: Mapped[bool] = mapped_column(Boolean)
+    created_at: Mapped[datetime] = _ts()
+    expires_at: Mapped[datetime] = _ts()
+    __table_args__ = (CheckConstraint("kind in ('run','study')", name="estimate_kind_known"),)
 
 
 class Run(Base):

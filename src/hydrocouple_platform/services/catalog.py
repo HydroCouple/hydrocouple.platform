@@ -129,6 +129,7 @@ class CatalogServices(ServiceBase):
                 ownership_mode=body.ownership_mode, adapter=body.adapter, region=body.region,
                 storage_uri=body.storage_uri, egress_policy=body.egress_policy.value,
                 credential_hash=digest,
+                price_table=body.price_table.model_dump(mode="json") if body.price_table else None,
             )
             s.add(target)
             try:
@@ -160,6 +161,7 @@ class CatalogServices(ServiceBase):
                     "target_id": t.id, "name": t.name, "adapter": t.adapter,
                     "ownership_mode": t.ownership_mode, "egress_policy": t.egress_policy,
                     "revoked": t.revoked_at is not None, "capabilities": t.capabilities,
+                    "price_table": t.price_table,
                     "last_poll_at": t.last_poll_at.isoformat() if t.last_poll_at else None,
                 }
                 for t in rows

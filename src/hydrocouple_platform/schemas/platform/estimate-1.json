@@ -27,10 +27,61 @@
       "title": "Cost Band",
       "type": "string"
     },
+    "currency": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Currency"
+    },
+    "estimate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "name it in the submission (estimate_id) when the organization requires an estimate for one this size",
+      "title": "Estimate Id"
+    },
+    "estimated_spend": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "from the target's price table and the stated runtime; null when either is missing",
+      "title": "Estimated Spend"
+    },
     "evaluations": {
       "default": 1,
       "title": "Evaluations",
       "type": "integer"
+    },
+    "expires_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires At"
     },
     "findings": {
       "items": {
@@ -53,6 +104,19 @@
     "ok": {
       "title": "Ok",
       "type": "boolean"
+    },
+    "pool_size": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "a study's concurrent pool tasks",
+      "title": "Pool Size"
     },
     "profile": {
       "anyOf": [

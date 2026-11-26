@@ -87,6 +87,16 @@ class PlatformClient:
     def revoke_target(self, target_id: str) -> None:
         self._call("POST", f"/v1/targets/{target_id}/revoke")
 
+    def set_target_prices(self, target_id: str, price_table: dict) -> dict:
+        return self._call("PUT", f"/v1/targets/{target_id}/prices", json=price_table)
+
+    def set_policy(self, organization_id: str, policy: dict) -> dict:
+        return self._call("PUT", f"/v1/organizations/{organization_id}/policy", json=policy)
+
+    def agent_session(self) -> dict:
+        """The calling agent session's budget, what it has used, and what is left."""
+        return self._call("GET", "/v1/agent-session")
+
     def add_member(self, organization_id: str, issuer: str, subject: str, role: str) -> None:
         self._call("POST", f"/v1/organizations/{organization_id}/members",
                    json={"issuer": issuer, "subject": subject, "role": role})
@@ -241,6 +251,10 @@ class PlatformClient:
         key = idempotency_key or f"hcp-{uuid.uuid4().hex}"
         return self._call("POST", "/v1/studies", json=_dump(request),
                           headers={"Idempotency-Key": key})
+
+    def estimate_study(self, request: StudyCreate | dict) -> dict:
+        """Validate and count a would-be study; name its estimate_id when creating it."""
+        return self._call("POST", "/v1/studies/estimate", json=_dump(request))
 
     def study(self, study_id: str) -> dict:
         return self._call("GET", f"/v1/studies/{study_id}")

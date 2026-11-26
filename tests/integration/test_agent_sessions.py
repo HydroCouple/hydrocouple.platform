@@ -202,3 +202,44 @@ def test_cancellations_and_approvals_keep_the_agents_chain(world):
     assert cancelled.actor["tool_call_id"] == "toolu_cancel"
     assert cancelled.actor["agent_session_id"] == row["agent_session_id"]
     assert cancelled.actor["model"] == "claude-opus-5-5"
+
+
+def test_a_session_reads_its_budget_over_http_and_cannot_set_policy(
+        services, artifact_dir, server, make_token):
+    world = make_world(services, artifact_dir)
+    revision = ready_revision(world)
+    row, _ = agent(world, max_runs=3, max_concurrent_attempts=2)
+    with PlatformClient(server, row["agent_session_token"]) as bot:
+        bot.submit_run({
+            "project_id": world.project_id, "revision_id": revision["revision_id"],
+            "workflow": "swmm.simulation", "workflow_version": "1",
+            "target_id": world.target_id}, idempotency_key="key-view-1")
+        view = AgentSessionView.model_validate(bot.agent_session())
+        assert view.used["runs"] == 1 and view.remaining["runs"] == 2
+        assert view.used["concurrent_attempts"] == 1 and view.remaining["concurrent_attempts"] == 1
+        assert view.remaining["evaluations"] is None  # the budget sets no limit
+        with pytest.raises(PlatformError) as refused:
+            bot.set_policy(world.org_id, {"require_estimate_above_evaluations": 0})
+        assert refused.value.code == ErrorCode.FORBIDDEN
+    with PlatformClient(server, make_token("alice")) as person:
+        assert person.set_policy(world.org_id, {"require_estimate_above_evaluations": 0}) == {
+            "require_estimate_above_evaluations": 0}
+        with pytest.raises(PlatformError) as not_a_session:
+            person.agent_session()
+        assert not_a_session.value.code == ErrorCode.NOT_FOUND
+        with pytest.raises(PlatformError) as needs:
+            person.submit_run({
+                "project_id": world.project_id, "revision_id": revision["revision_id"],
+                "workflow": "swmm.simulation", "workflow_version": "1",
+                "target_id": world.target_id}, idempotency_key="key-view-2")
+        assert needs.value.code == ErrorCode.ESTIMATE_REQUIRED
+        estimate = person.estimate({
+            "project_id": world.project_id, "revision_id": revision["revision_id"],
+            "workflow": "swmm.simulation", "workflow_version": "1",
+            "target_id": world.target_id})
+        accepted = person.submit_run({
+            "project_id": world.project_id, "revision_id": revision["revision_id"],
+            "workflow": "swmm.simulation", "workflow_version": "1",
+            "target_id": world.target_id, "estimate_id": estimate["estimate_id"]},
+            idempotency_key="key-view-3")
+        assert accepted["status"] == "ACCEPTED"

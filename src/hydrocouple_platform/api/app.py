@@ -36,8 +36,11 @@ from ..contracts.deletion import DeletionView, ErasureReport
 from ..contracts.errors import ErrorBody, ErrorCode, PlatformError
 from ..contracts.requests import (
     AgentSessionCreate,
+    AgentSessionView,
     Estimate,
     JobView,
+    OrganizationPolicy,
+    PriceTable,
     RevisionCreate,
     RunAccepted,
     RunRequest,
@@ -203,6 +206,14 @@ def create_app(
     def revoke_target(target_id: str, p: User) -> None:
         svc.revoke_target(p, target_id)
 
+    @app.put("/v1/targets/{target_id}/prices")
+    def set_target_prices(target_id: str, body: PriceTable, p: User) -> dict:
+        return svc.set_target_prices(p, target_id, body)
+
+    @app.put("/v1/organizations/{org_id}/policy")
+    def set_policy(org_id: str, body: OrganizationPolicy, p: User) -> dict:
+        return svc.set_policy(p, org_id, body)
+
     @app.post("/v1/projects/{project_id}/sessions", status_code=201)
     def create_session(project_id: str, body: NameBody, p: User) -> dict:
         return svc.create_session(p, project_id, body.name)
@@ -218,6 +229,11 @@ def create_app(
     @app.post("/v1/agent-sessions/{agent_session_id}/revoke", status_code=204)
     def revoke_agent_session(agent_session_id: str, p: User) -> None:
         svc.revoke_agent_session(p, agent_session_id)
+
+    @app.get("/v1/agent-session")
+    def agent_session(p: User) -> AgentSessionView:
+        # The calling agent session's budget, use and what is left.
+        return svc.agent_session_view(p)
 
     # -- revisions and grants ---------------------------------------------------
 
@@ -308,6 +324,10 @@ def create_app(
     @app.post("/v1/studies", status_code=201)
     def create_study(body: StudyCreate, p: User, key: IdempotencyKey = None) -> StudyView:
         return svc.create_study(p, body, _key(key))
+
+    @app.post("/v1/studies/estimate")
+    def estimate_study(body: StudyCreate, p: User) -> Estimate:
+        return svc.estimate_study(p, body)
 
     @app.get("/v1/studies/{study_id}")
     def get_study(study_id: str, p: User) -> StudyView:

@@ -34,6 +34,8 @@ class ControlPlaneSettings(BaseSettings):
     abandon_after_seconds: int = Field(default=900, ge=0)
     attempt_token_seconds: int = Field(default=600, ge=60)
     approval_ttl_seconds: int = Field(default=24 * 3600, gt=0)
+    # How long an estimate stays valid for the submission that names it.
+    estimate_ttl_seconds: int = Field(default=3600, gt=0)
     grant_redeliver_seconds: int = Field(default=60, gt=0)
     max_revision_files: int = Field(default=5000, gt=0)
     max_revision_bytes: int = Field(default=20 * 1024**3, gt=0)

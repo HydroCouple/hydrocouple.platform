@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -47,13 +47,13 @@ from ..db.models import (
 from ..workflows import Workflow, get_workflow
 from .auth import Principal
 from .base import ServiceBase
+from .estimates import cost_band
 
 PROFILES: dict[str, dict[str, float]] = {
     "cpu-small": {"cpu": 1, "memory_gib": 2, "scratch_gib": 4},
     "cpu-standard": {"cpu": 4, "memory_gib": 8, "scratch_gib": 20},
     "memory-large": {"cpu": 8, "memory_gib": 64, "scratch_gib": 50},
 }
-ACTIVE_STATES = [s.value for s in JobState if s not in JOB_TERMINAL]
 DEFAULT_RETRY_BUDGET = 2
 RESUME_STATE = "state.h5"  # the saved state a resumable workflow publishes
 
@@ -214,38 +214,35 @@ class RunServices(ServiceBase):
         )
 
     def _budget_reasons(self, s: Session, session: AgentSession, checked: _Checked,
-                        slots: int = 1) -> list[str]:
-        """Why a submission needing ``slots`` concurrent attempts is outside the budget."""
+                        slots: int = 1, spend: tuple[float | None, str | None] = (None, None),
+                        what: str = "run") -> list[str]:
+        """Why a submission needing ``slots`` concurrent attempts, estimated at ``spend``
+        (amount and currency), is outside the budget."""
         budget = Budget.model_validate(session.budget)
+        used = self._session_use(s, session)  # type: ignore[attr-defined]
         reasons: list[str] = []
         if budget.max_runs is not None and session.runs_submitted >= budget.max_runs:
             reasons.append(f"the agent session has used its {budget.max_runs} runs")
         if budget.max_concurrent_attempts is not None:
             # Active run jobs, plus every live study's whole pool, which can start at any time.
-            active = s.scalar(
-                select(func.count()).select_from(Job).join(Run, Run.id == Job.run_id)
-                .where(Run.agent_session_id == session.id, Job.state.in_(ACTIVE_STATES),
-                       Job.study_id.is_(None))
-            ) or 0
-            pools = s.scalar(
-                select(func.coalesce(func.sum(Study.pool_size), 0))
-                .where(Study.agent_session_id == session.id,
-                       Study.state.in_(["PENDING_APPROVAL", "OPEN", "CLOSED"]))
-            ) or 0
-            if active + pools + slots > budget.max_concurrent_attempts:
+            if used["concurrent_attempts"] + slots > budget.max_concurrent_attempts:
                 reasons.append(
-                    f"{active} jobs are active and {pools} pool tasks are reserved; with "
-                    f"{slots} more the session would exceed its "
+                    f"{used['concurrent_attempts']} attempts are active or reserved by pools; "
+                    f"with {slots} more the session would exceed its "
                     f"{budget.max_concurrent_attempts} concurrent attempts")
         if budget.allowed_targets is not None and checked.target.id not in budget.allowed_targets:
             reasons.append(f"target {checked.target.id} is outside the session's allowed targets")
         if (budget.allowed_job_classes is not None
                 and checked.resources.job_class not in budget.allowed_job_classes):
             reasons.append(f"job class {checked.resources.job_class.value} is not allowed")
-        if budget.max_estimated_spend is not None:
-            reasons.append("the session caps spend but this target has no price source, so the "
-                           "cost of this run is unknown")
+        spend_reason = self._spend_reason(budget, used, *spend, what)  # type: ignore[attr-defined]
+        if spend_reason:
+            reasons.append(spend_reason)
         return reasons
+
+    def _run_spend(self, checked: _Checked, req: RunRequest) -> tuple[float | None, str | None]:
+        hours = req.estimated_runtime_seconds / 3600 if req.estimated_runtime_seconds else None
+        return self._spend(checked.target, checked.resources.profile, hours)  # type: ignore
 
     def _agent_session(self, s: Session, principal: Principal, agent_session_id: str,
                        project: Project, lock: bool) -> AgentSession:
@@ -260,17 +257,26 @@ class RunServices(ServiceBase):
     # -- estimate ------------------------------------------------------------------
 
     def estimate(self, principal: Principal, req: RunRequest) -> Estimate:
+        """Validate a would-be run and price it; a valid estimate is kept for the submission."""
         with self.tx() as s:
             checked = self._check(s, principal, req, "viewer")
             checked.findings.extend(self._run_findings(checked))
+            spend = self._run_spend(checked, req)
             reasons: list[str] = []
             if principal.agent_session_id:
                 reasons = self._budget_reasons(s, self._agent_session(
-                    s, principal, principal.agent_session_id, checked.project, False), checked)
+                    s, principal, principal.agent_session_id, checked.project, False), checked,
+                    spend=spend)
+            row = None if checked.findings else self._record_estimate(  # type: ignore
+                s, principal, checked.project, "run", checked.request_hash, 1, spend[0],
+                bool(reasons))
             return Estimate(
                 ok=not checked.findings, findings=checked.findings,
                 job_class=checked.resources.job_class, profile=checked.resources.profile,
-                requires_approval=bool(reasons), approval_reasons=reasons,
+                estimated_spend=spend[0], currency=spend[1],
+                cost_band=cost_band(*spend), requires_approval=bool(reasons),
+                approval_reasons=reasons, estimate_id=row.id if row else None,
+                expires_at=row.expires_at if row else None,
             )
 
     # -- submit ----------------------------------------------------------------------
@@ -326,12 +332,15 @@ class RunServices(ServiceBase):
                     next_action="Call platform_estimate to see every finding before submitting.",
                 )
 
+            self._require_estimate(  # type: ignore[attr-defined]
+                s, principal, org_id, "run", checked.request_hash, 1, req.estimate_id)
+            spend = self._run_spend(checked, req)
             session = None
             reasons: list[str] = []
             if principal.agent_session_id:
                 session = self._agent_session(s, principal, principal.agent_session_id,
                                               checked.project, lock=True)
-                reasons = self._budget_reasons(s, session, checked)
+                reasons = self._budget_reasons(s, session, checked, spend=spend)
             actor = self.actor_of(s, principal, req.tool_call_id, session)
 
             run_id, job_id = new_id("run"), new_id("job")
@@ -369,6 +378,7 @@ class RunServices(ServiceBase):
                 s.add(Outbox(topic="job.accepted", payload={"job_id": job_id}))
             if session is not None:
                 session.runs_submitted += 1
+                session.estimated_spend += spend[0] or 0.0
             self.audit(s, org_id, actor.model_dump(mode="json"), "run.submit", "run", run_id,
                        {"job_id": job_id, "state": state.value, "approval_reasons": reasons})
             s.flush()

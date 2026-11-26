@@ -33,7 +33,7 @@ from sqlalchemy.orm import Session
 from ..contracts.errors import ErrorCode, PlatformError
 from ..contracts.jobs import FailureClass, JobClass, JobSpec
 from ..contracts.manifests import check_safe_path, sha256_of
-from ..contracts.requests import Budget, RunRequest
+from ..contracts.requests import Budget, Estimate, RunRequest
 from ..contracts.states import JOB_TERMINAL, JobState
 from ..contracts.studies import (
     STUDY_LINEAGE_SCHEMA,
@@ -68,6 +68,7 @@ from ..db.models import (
 from ..db.models import EvaluationChunk as ChunkRow
 from .auth import Principal
 from .base import ServiceBase
+from .estimates import cost_band
 
 # A batch is split into about two chunks per pool task, at most this many candidates each.
 MAX_CHUNK = 32
@@ -154,20 +155,47 @@ class StudyServices(ServiceBase):
         return []
 
     def _study_budget_reasons(self, s: Session, session: AgentSession, checked,
-                              req: StudyCreate) -> list[str]:
+                              req: StudyCreate,
+                              spend: tuple[float | None, str | None] = (None, None)
+                              ) -> list[str]:
         reasons = self._budget_reasons(  # type: ignore[attr-defined]
-            s, session, checked, slots=req.pool_size)
+            s, session, checked, slots=req.pool_size, spend=spend, what="study")
         budget = Budget.model_validate(session.budget)
         if budget.max_evaluations is not None:
-            reserved = s.scalar(
-                select(func.coalesce(func.sum(Study.max_evaluations), 0))
-                .where(Study.agent_session_id == session.id,
-                       Study.state != StudyState.REJECTED.value)) or 0
+            reserved = self._session_use(s, session)["evaluations"]  # type: ignore
             if reserved + req.max_evaluations > budget.max_evaluations:
                 reasons.append(
                     f"the study asks for {req.max_evaluations} evaluations; the session has "
                     f"{max(budget.max_evaluations - reserved, 0)} of {budget.max_evaluations} left")
         return reasons
+
+    def _study_spend(self, checked, req: StudyCreate) -> tuple[float | None, str | None]:
+        hours = (req.max_evaluations * req.estimated_seconds_per_evaluation / 3600
+                 if req.estimated_seconds_per_evaluation else None)
+        return self._spend(checked.target, checked.resources.profile, hours)  # type: ignore
+
+    def estimate_study(self, principal: Principal, req: StudyCreate) -> Estimate:
+        """Validate a would-be study and count it: evaluations, pool, profile, approval and,
+        where the target has prices and the request states seconds per evaluation, spend."""
+        with self.tx() as s:
+            checked, request_hash = self._check_study(s, principal, req, "viewer")
+            spend = self._study_spend(checked, req)
+            reasons: list[str] = []
+            if principal.agent_session_id:
+                session = self._agent_session(  # type: ignore[attr-defined]
+                    s, principal, principal.agent_session_id, checked.project, False)
+                reasons = self._study_budget_reasons(s, session, checked, req, spend)
+            row = None if checked.findings else self._record_estimate(  # type: ignore
+                s, principal, checked.project, "study", request_hash, req.max_evaluations,
+                spend[0], bool(reasons))
+            return Estimate(
+                ok=not checked.findings, findings=checked.findings,
+                job_class=JobClass.EVALUATOR_POOL, profile=checked.resources.profile,
+                evaluations=req.max_evaluations, pool_size=req.pool_size,
+                estimated_spend=spend[0], currency=spend[1], cost_band=cost_band(*spend),
+                requires_approval=bool(reasons), approval_reasons=reasons,
+                estimate_id=row.id if row else None,
+                expires_at=row.expires_at if row else None)
 
     def create_study(self, principal: Principal, req: StudyCreate, idempotency_key: str
                      ) -> StudyView:
@@ -210,11 +238,14 @@ class StudyServices(ServiceBase):
                     details={"findings": checked.findings},
                     next_action="Fix the findings, then create the study again.")
 
+            self._require_estimate(  # type: ignore[attr-defined]
+                s, principal, org_id, "study", request_hash, req.max_evaluations, req.estimate_id)
+            spend = self._study_spend(checked, req)
             session, reasons = None, []
             if principal.agent_session_id:
                 session = self._agent_session(  # type: ignore[attr-defined]
                     s, principal, principal.agent_session_id, checked.project, lock=True)
-                reasons = self._study_budget_reasons(s, session, checked, req)
+                reasons = self._study_budget_reasons(s, session, checked, req, spend)
             actor = self.actor_of(s, principal, req.tool_call_id, session)
 
             study_id, run_id = new_id("std"), new_id("run")
@@ -268,6 +299,7 @@ class StudyServices(ServiceBase):
                     expires_at=self.now() + timedelta(seconds=self.settings.approval_ttl_seconds)))
             if session is not None:
                 session.runs_submitted += 1
+                session.estimated_spend += spend[0] or 0.0
             self.audit(s, org_id, actor.model_dump(mode="json"), "study.create", "study", study_id,
                        {"state": state.value, "approval_reasons": reasons,
                         "max_evaluations": req.max_evaluations, "pool_size": req.pool_size})

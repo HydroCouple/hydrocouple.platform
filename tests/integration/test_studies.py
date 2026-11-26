@@ -18,11 +18,17 @@ from datetime import timedelta
 import pytest
 from sqlalchemy import select
 
-from conftest import DATA
+from conftest import DATA, ISSUER
 from hydrocouple_platform.contracts.agent import AttemptOutcome, AttemptResult
 from hydrocouple_platform.contracts.errors import ErrorCode, PlatformError
 from hydrocouple_platform.contracts.jobs import FailureClass, JobClass
-from hydrocouple_platform.contracts.requests import AgentSessionCreate, Budget, RunRequest
+from hydrocouple_platform.contracts.requests import (
+    AgentSessionCreate,
+    Budget,
+    OrganizationPolicy,
+    PriceTable,
+    RunRequest,
+)
 from hydrocouple_platform.contracts.studies import (
     BatchSubmit,
     Dimension,
@@ -35,6 +41,7 @@ from hydrocouple_platform.contracts.studies import (
 )
 from hydrocouple_platform.db import transaction
 from hydrocouple_platform.db.models import AuditRecord, EvaluationChunk, Job, StudyBatch
+from hydrocouple_platform.services import VerifiedClaims
 from hydrocouple_platform.services.studies import MAX_DELIVERIES, pareto_indices
 from hydrocouple_platform.storage import sha256_file
 from world import local_capabilities, make_world, read_from, ready_revision
@@ -948,3 +955,99 @@ def test_a_tool_call_view_of_the_client_names_its_call_on_every_request(setup, s
             select(AuditRecord).where(AuditRecord.object_id.in_(
                 [study["study_id"], batch["batch_id"]])))}
     assert calls == {"study.create": "tc_http", "study.batch": "tc_http", "study.cancel": None}
+
+
+def study_body(world, revision, **kw) -> StudyCreate:
+    return StudyCreate(
+        project_id=world.project_id, revision_id=revision["revision_id"],
+        target_id=world.target_id,
+        parameters={"env_config": env_config(), "evaluation_timeout_seconds": 5},
+        dimensions=DIMS, objectives=OBJECTIVES, seed=7,
+        max_evaluations=kw.pop("max_evaluations", 40), pool_size=kw.pop("pool_size", 2), **kw)
+
+
+def test_a_study_estimate_counts_the_study_and_prices_it_from_its_target(setup):
+    world, revision = setup
+    svc = world.services
+    unpriced = svc.estimate_study(world.admin, study_body(world, revision))
+    assert (unpriced.ok, unpriced.evaluations, unpriced.pool_size) == (True, 40, 2)
+    assert unpriced.job_class == JobClass.EVALUATOR_POOL and unpriced.profile
+    assert unpriced.cost_band == "unknown" and unpriced.estimated_spend is None
+    assert unpriced.estimate_id.startswith("est_") and unpriced.expires_at is not None
+
+    svc.set_target_prices(world.admin, world.target_id,
+                          PriceTable(currency="USD", per_hour={unpriced.profile: 0.6}))
+    no_runtime = svc.estimate_study(world.admin, study_body(world, revision))
+    assert no_runtime.currency == "USD" and no_runtime.cost_band == "unknown"
+    priced = svc.estimate_study(world.admin, study_body(
+        world, revision, estimated_seconds_per_evaluation=30))
+    assert priced.estimated_spend == pytest.approx(40 * 30 / 3600 * 0.6)  # 0.2
+    assert priced.cost_band == "under 1 USD"
+
+    agent = session_principal(world, Budget())
+    with pytest.raises(PlatformError) as refused:
+        svc.set_target_prices(agent, world.target_id, PriceTable(currency="USD", per_hour={}))
+    assert refused.value.code == ErrorCode.FORBIDDEN
+
+
+def test_the_organization_can_require_an_estimate_for_a_large_study(setup, clock):
+    world, revision = setup
+    svc = world.services
+    svc.set_policy(world.admin, world.org_id,
+                   OrganizationPolicy(require_estimate_above_evaluations=10))
+    small = svc.create_study(world.admin, study_body(world, revision, max_evaluations=5),
+                             "study-key-small")
+    assert small.state == "OPEN"  # at or under the threshold, no estimate is needed
+
+    def refused(body, key):
+        with pytest.raises(PlatformError) as err:
+            svc.create_study(world.admin, body, key)
+        assert err.value.code == ErrorCode.ESTIMATE_REQUIRED
+        return str(err.value)
+
+    assert "names none" in refused(study_body(world, revision), "study-key-none")
+    estimate = svc.estimate_study(world.admin, study_body(world, revision))
+    other = study_body(world, revision, max_evaluations=30, estimate_id=estimate.estimate_id)
+    assert "different request" in refused(other, "study-key-other")
+    agent = session_principal(world, Budget())
+    theirs = svc.estimate_study(agent, study_body(world, revision))
+    assert "not an estimate this caller made" in refused(
+        study_body(world, revision, estimate_id=theirs.estimate_id), "study-key-theirs")
+    svc.add_member(world.admin, world.org_id, ISSUER, "bob", "editor")
+    bob = svc.principal_for(VerifiedClaims(ISSUER, "bob", None))
+    bobs = svc.estimate_study(bob, study_body(world, revision))
+    assert "not an estimate this caller made" in refused(
+        study_body(world, revision, estimate_id=bobs.estimate_id), "study-key-bobs")
+    accepted = svc.create_study(
+        world.admin, study_body(world, revision, estimate_id=estimate.estimate_id),
+        "study-key-estimated")
+    assert accepted.state == "OPEN"
+
+    late = svc.estimate_study(world.admin, study_body(world, revision, pool_size=1))
+    clock.advance(svc.settings.estimate_ttl_seconds + 1)
+    assert "expired" in refused(study_body(world, revision, pool_size=1,
+                                           estimate_id=late.estimate_id), "study-key-late")
+
+
+def test_a_spend_cap_holds_a_study_estimated_beyond_it_for_a_person(setup):
+    world, revision = setup
+    svc = world.services
+    profile = svc.estimate_study(world.admin, study_body(world, revision)).profile
+    svc.set_target_prices(world.admin, world.target_id,
+                          PriceTable(currency="USD", per_hour={profile: 0.6}))
+    session = svc.create_agent_session(world.admin, AgentSessionCreate(
+        project_id=world.project_id, client_name="claude-code",
+        budget=Budget(max_estimated_spend=0.3, max_evaluations=1000)))
+    agent = svc.session_principal(session["agent_session_token"])
+    body = study_body(world, revision, estimated_seconds_per_evaluation=30)  # 0.2 USD each
+    first = svc.create_study(agent, body, "study-key-spend-1")
+    assert first.state == "OPEN"
+    second = svc.create_study(agent, body, "study-key-spend-2")
+    assert second.state == "PENDING_APPROVAL"
+    view = svc.agent_session_view(agent)
+    assert view.used["estimated_spend"] == pytest.approx(0.4)
+    assert view.remaining["estimated_spend"] == 0 and view.remaining["runs"] is None
+    assert view.used["evaluations"] == 80 and view.remaining["evaluations"] == 920
+    approval = svc.list_approvals(world.admin, world.project_id)[0]
+    assert any("estimated at 0.2 USD" in r and "0.1 of 0.3 left" in r
+               for r in approval["reasons"])
